@@ -1,0 +1,13 @@
+{
+  "name": "knomad",
+  "version": "1.0.0",
+  "description": "Local-first job search workspace: dashboard, resume tailoring, and application tracker.",
+  "private": true,
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "playwright": "^1.65.0"
+  }
+}
