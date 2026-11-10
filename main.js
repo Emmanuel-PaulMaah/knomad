@@ -997,6 +997,11 @@ function removeEvent(eventId) {
   toast('Event removed');
 }
 
+function removeEventConfirmed(eventId) {
+  if (!confirm('Remove this event? It can be re-added later.')) return;
+  removeEvent(eventId);
+}
+
 // ---------------------------------------------------------------- Profile form
 
 function applyProfileToForm() {
@@ -1559,6 +1564,7 @@ function openModal(modal) {
 function closeModal(modal) {
   if (!modal) return;
   modal.hidden = true;
+  if (modal.id === 'addJobModal') resolveQuestionsResponse('closed');
   if (!$$('.modal').some((item) => !item.hidden)) {
     document.body.classList.remove('modal-open');
   }
@@ -1587,6 +1593,8 @@ function openAddJob() {
 }
 
 function resetAddJob() {
+  verifySession = null;
+  questionsResolver = null;
   const form = $('#addJobForm');
   if (form) form.reset();
   const wrap = $('#addJobFormWrap');
@@ -1595,6 +1603,12 @@ function resetAddJob() {
   if (progress) progress.hidden = true;
   const error = $('#jobError');
   if (error) error.hidden = true;
+  const questionsWrap = $('#questionsWrap');
+  if (questionsWrap) questionsWrap.hidden = true;
+  const verifyWrap = $('#verifyWrap');
+  if (verifyWrap) verifyWrap.hidden = true;
+  const questionsFields = $('#questionsFields');
+  if (questionsFields) questionsFields.innerHTML = '';
 
   $$('#addJobModal details').forEach((details) => {
     details.open = false;
@@ -1655,9 +1669,13 @@ async function handleAddJobSubmit(event) {
   $('#jobError').hidden = true;
   $('#progressUrl').textContent = rawUrl;
 
+  let page = null;
+  let job = null;
+  let pack = null;
+  let clarifications = '';
+
   try {
     setStep('read', 'running');
-    let page = null;
 
     if (pasted) {
       page = { text: pasted, html: '', via: 'paste' };
@@ -1667,54 +1685,50 @@ async function handleAddJobSubmit(event) {
       setStep('read', 'done', page.via);
     }
 
-    const job = extractJobInfo(page, rawUrl);
+    job = extractJobInfo(page, rawUrl);
 
+    // Ask the user a few grounded questions before generating.
+    setStep('questions', 'running');
+    const questions = buildQuestions(state.profile, job);
+    if (questions) {
+      state.questionState = { questions };
+      openQuestionsModal(questions);
+      const outcome = await waitForQuestionsResponse();
+      if (outcome === 'closed') {
+        resetAddJob();
+        return;
+      }
+      clarifications = outcome === 'answered' ? collectQuestionAnswers() : '';
+      closeQuestionsModal();
+      setStep('questions', 'done', clarifications ? 'answered' : 'skipped');
+    } else {
+      setStep('questions', 'done', 'none needed');
+    }
+
+    // Generate.
+    $('#jobProgress').hidden = false;
     setStep('tailor', 'running');
-    const pack = await buildJobPack({
+    pack = await buildJobPack({
       company: job.company,
       position: job.position,
       description: job.description,
       url: rawUrl
-    });
+    }, clarifications);
     setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : 'basic mode');
 
-    setStep('save', 'running');
-    const now = new Date().toISOString();
-    const application = {
-      id: makeId(),
-      company: pack.company || job.company || 'Unknown company',
-      position: pack.position || job.position || 'Untitled role',
-      status: 'applied',
-      url: rawUrl,
-      notes: '',
-      dateApplied: now,
-      statusHistory: [{ status: 'applied', at: now }],
-      events: [],
-      interviewSession: emptyPractice(),
-      resume: pack.resume || '',
-      interviewPrep: pack.interviewPrep || '',
-      jobDescription: job.description || ''
-    };
+    // Verify before filing.
+    setStep('verify', 'running');
+    const flagged = (pack.resume || '').trim()
+      ? verifyResume(pack.resume, { clarifications })
+      : [];
 
-    state.applications.unshift(application);
-    saveApplications();
-    setStep('save', 'done', 'saved');
-    renderDashboard();
-    renderTracker();
-
-    setTimeout(() => {
-      closeModal($('#addJobModal'));
-      openDetail(application.id);
-      resetAddJob();
-    }, 550);
-
-    if (pack.source === 'ai') {
-      toast('Application tailored and filed');
-    } else if (pack.aiError) {
-      toast('Gemini failed, so knomad saved a basic draft. Check your key in Settings.', 'error');
-    } else {
-      toast('Saved in basic mode. Add a Gemini key for full rewrites.');
+    if (flagged.length) {
+      showVerifyScreen(pack, job, flagged, rawUrl, clarifications);
+      return;
     }
+
+    setStep('verify', 'done', 'clean');
+    await saveApplication(pack, job, rawUrl, clarifications);
   } catch (err) {
     failRunningStep();
     const errorBox = $('#jobError');
@@ -1726,6 +1740,348 @@ async function handleAddJobSubmit(event) {
     }
     if (errorBox) errorBox.hidden = false;
   }
+}
+
+let questionsResolver = null;
+let verifySession = null;
+
+function waitForQuestionsResponse() {
+  if (!$('#questionsForm')) return Promise.resolve('closed');
+  return new Promise((resolve) => {
+    questionsResolver = resolve;
+  });
+}
+
+function resolveQuestionsResponse(outcome) {
+  const resolve = questionsResolver;
+  questionsResolver = null;
+  if (resolve) resolve(outcome || 'closed');
+}
+
+function showVerifyScreen(pack, job, flagged, rawUrl, clarifications) {
+  verifySession = { job, rawUrl, clarifications };
+  if ($('#addJobModal').hidden) openModal($('#addJobModal'));
+  $('#addJobFormWrap').hidden = true;
+  $('#questionsWrap').hidden = true;
+  $('#verifyWrap').hidden = false;
+  $('#jobProgress').hidden = true;
+  $('#verifySub').textContent = 'Found ' + flagged.length + ' passage' + (flagged.length === 1 ? '' : 's') +
+    ' that ' + (flagged.length === 1 ? 'mentions details' : 'mention details') +
+    ' not obviously in your profile, base resume, or your notes. Check them before saving.';
+
+  const whyFor = {
+    date: 'A date here is not traceable to your profile, base resume, or your notes — it could be a year, month, or range the generator inferred from the posting.',
+    year: 'A year here is not traceable to your profile, base resume, or your notes — only your real employment dates should appear on the tailored resume.',
+    metric: 'A number or metric here is not traceable to your profile, base resume, or your notes — do not keep a figure you did not actually achieve.',
+    'possible company or org name': 'This looks like a company or organization name that is not traceable to your profile, base resume, or your notes — verify you actually worked or volunteered there.',
+  };
+
+  const host = $('#verifyDetails');
+  if (host) {
+    host.innerHTML = flagged
+      .map((item, index) => {
+        const why = whyFor[item.reason] || 'This detail is not obviously from your profile, base resume, or your notes.';
+        return '<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:8px">' +
+          '<p class="label-mono" style="margin:0 0 2px;color:var(--amber)">' + (index + 1) + '. Possible ' + escapeHtml(item.reason) + '</p>' +
+          '<p style="margin:0 0 4px">' + escapeHtml(item.line) + '</p>' +
+          '<p class="muted small" style="margin:0 0 8px">Why this is flagged: ' + escapeHtml(why) + '</p>' +
+          '</div>';
+      })
+      .join('');
+  }
+
+  $('#verifyDiscardBtn').onclick = () => {
+    verifySession = null;
+    closeModal($('#addJobModal'));
+    resetAddJob();
+  };
+
+  $('#verifyEditBtn').onclick = () => {
+    $('#verifyWrap').hidden = true;
+    const questions = buildQuestions(state.profile, job);
+    state.questionState = { questions };
+    const previous = splitClarificationsToAnswers(questions, clarifications || '');
+    openQuestionsModal(questions);
+    renderQuestionsUI(questions, previous);
+    $('#jobProgress').hidden = true;
+  };
+
+  $('#verifySaveBtn').onclick = async () => {
+    verifySession = null;
+    $('#verifyWrap').hidden = true;
+    await saveApplication(pack, job, rawUrl, clarifications);
+  };
+}
+
+async function regenerateFromVerify() {
+  const session = verifySession;
+  if (!session) return;
+  const clarifications = collectQuestionAnswers();
+  closeQuestionsModal();
+  $('#jobProgress').hidden = false;
+  setStep('tailor', 'running');
+
+  try {
+    const pack = await buildJobPack({
+      company: session.job.company,
+      position: session.job.position,
+      description: session.job.description,
+      url: session.rawUrl
+    }, clarifications);
+    setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : 'basic mode');
+
+    setStep('verify', 'running');
+    const flagged = (pack.resume || '').trim()
+      ? verifyResume(pack.resume, { clarifications })
+      : [];
+
+    if (flagged.length) {
+      showVerifyScreen(pack, session.job, flagged, session.rawUrl, clarifications);
+      return;
+    }
+
+    setStep('verify', 'done', 'clean');
+    verifySession = null;
+    await saveApplication(pack, session.job, session.rawUrl, clarifications);
+  } catch (err) {
+    failRunningStep();
+    const errorBox = $('#jobError');
+    const errorText = $('#jobErrorText');
+    if (errorText) {
+      errorText.textContent = err && err.message
+        ? err.message
+        : 'Something went wrong while regenerating that draft.';
+    }
+    if (errorBox) errorBox.hidden = false;
+  }
+}
+
+async function saveApplication(pack, job, rawUrl, clarifications) {
+  setStep('save', 'running');
+  const now = new Date().toISOString();
+  const application = {
+    id: makeId(),
+    company: pack.company || job.company || 'Unknown company',
+    position: pack.position || job.position || 'Untitled role',
+    status: 'applied',
+    url: rawUrl,
+    notes: '',
+    dateApplied: now,
+    statusHistory: [{ status: 'applied', at: now }],
+    events: [],
+    interviewSession: emptyPractice(),
+    resume: pack.resume || '',
+    interviewPrep: pack.interviewPrep || '',
+    jobDescription: job.description || '',
+    clarifications: clarifications || ''
+  };
+
+  state.applications.unshift(application);
+  saveApplications();
+  setStep('save', 'done', 'saved');
+  renderDashboard();
+  renderTracker();
+
+  setTimeout(() => {
+    closeModal($('#addJobModal'));
+    openDetail(application.id);
+    resetAddJob();
+  }, 550);
+
+  if (pack.source === 'ai') {
+    toast('Application tailored and filed');
+  } else if (pack.aiError) {
+    toast('Gemini failed, so knomad saved a basic draft. Check your key in Settings.', 'error');
+  } else {
+    toast('Saved in basic mode. Add a Gemini key for full rewrites.');
+  }
+}
+
+// ---------------------------------------------------------------- Clarifying questions
+
+const QUESTION_TEMPLATES = [
+  {
+    label: 'What facts am I relying on?',
+    selector: (profile, job, resumeText) => {
+      const resume = String(resumeText || '').toLowerCase();
+      const posting = String((job.description || '') + ' ' + (job.position || '')).toLowerCase();
+      const important = extractPostingRequirements(posting);
+      if (!important.length) return null;
+      const covered = important.filter((req) => resume.includes(req.word));
+      const gap = important.filter((req) => !covered.includes(req));
+      if (!gap.length) return null;
+      const items = gap.slice(0, 3).map((req) => {
+        const coveredText = covered.length
+          ? ' Your base resume already mentions: ' + covered.map((c) => c.sample).join('; ').
+            replace(/\s+/g, ' ').
+            trim()
+          : '';
+        return 'The posting emphasizes ' + req.phrase + '. ' +
+          'Is that something you have direct experience with? If yes, briefly note the project or role; if no, leave it out.' +
+          coveredText;
+      });
+      return {
+        intro: 'A few things the posting wants don\'t obviously appear in your base resume. Confirm only what\'s true.',
+        items,
+        fieldLabel: 'Your notes (optional)'
+      };
+    }
+  },
+  {
+    label: 'Which experience should lead?',
+    selector: (profile, job, resumeText) => {
+      const resume = String(resumeText || '').toLowerCase();
+      const posting = String((job.description || '') + ' ' + (job.position || '')).toLowerCase();
+      const target = (job.position || 'this role');
+      const match = findCloserExperience(resume, posting, target);
+      if (!match) return null;
+      return {
+        intro: 'Pick the one or two projects from your base resume that best match this role.',
+        items: [
+          'Your base resume mentions: ' + match.sample +
+            '. Is that the experience you want front and center for ' + target + '? If not, briefly name the one you do want used.',
+          'Any of the above that should be de-emphasized or left off for this application?'
+        ],
+        fieldLabel: 'Which experience to lead with (optional)'
+      };
+    }
+  },
+  {
+    label: 'Anything true that the base resume omits?',
+    selector: () => ({
+      intro: 'Only include facts that are genuinely true and not already in your base resume or profile.',
+      items: [
+        'Is there a skill, project, certification, degree, or role that your base resume omits but that is true and relevant here? If yes, briefly state it — otherwise leave blank.',
+        'Any dates, titles, company names, or numbers you want used exactly as written?'
+      ],
+      fieldLabel: 'Additional true facts (optional)'
+    })
+  }
+];
+
+function extractPostingRequirements(posting) {
+  const words = [];
+  const seen = new Set();
+  for (const word of SKILL_WORDS) {
+    if (seen.has(word)) continue;
+    seen.add(word);
+    if (posting.includes(word)) {
+      words.push({ word, phrase: word, sample: word });
+    }
+  }
+  const requirements = [
+    'typescript', 'react', 'next.js', 'node.js', 'python', 'sql',
+    'aws', 'docker', 'kubernetes', 'terraform', 'graphql', 'rest', 'api',
+    'agile', 'scrum', 'jira', 'kanban', 'accessibility', 'ux', 'ui',
+    'machine learning', 'data analysis', 'data visualization', 'analytics',
+    'seo', 'content marketing', 'product management', 'project management',
+    'customer success', 'leadership', 'stakeholder management', 'communication',
+    'copywriting', 'email marketing', 'paid media', 'crm', 'salesforce',
+    'excel', 'tableau', 'power bi', 'photoshop', 'illustrator'
+  ];
+  for (const word of requirements) {
+    if (seen.has(word)) continue;
+    seen.add(word);
+    if (posting.includes(word)) {
+      words.push({ word, phrase: word, sample: word });
+    }
+  }
+  return words.slice(0, 6);
+}
+
+function findCloserExperience(resume, posting, target) {
+  const lines = resume.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const scored = lines
+    .map((line) => {
+      const lower = line.toLowerCase();
+      let score = 0;
+      for (const word of SKILL_WORDS) {
+        if (lower.includes(word) && posting.includes(word)) score += 1;
+      }
+      return { line, score };
+    })
+    .filter((item) => item.score > 0 && item.line.length > 8 && item.line.length < 160);
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0] ? { sample: scored[0].line } : null;
+}
+
+function buildQuestions(profile, job) {
+  const resumeText = profile.resumeText || '';
+  const selected = QUESTION_TEMPLATES
+    .map((tpl) => tpl.selector(profile, job, resumeText))
+    .filter(Boolean);
+  if (!selected.length) return null;
+
+  const intro = selected.map((s) => s.intro).filter(Boolean).join('\n');
+  const items = selected.flatMap((s) => s.items);
+  const fieldLabel = selected[selected.length - 1].fieldLabel;
+
+  return { intro, items, fieldLabel };
+}
+
+function renderQuestionsUI(state, priorAnswers) {
+  const host = $('#questionsFields');
+  if (!host) return;
+  if (!state) {
+    host.innerHTML = '<p class="field-help">No specific gaps found. You can skip straight to generation.</p>';
+    return;
+  }
+
+  const prior = (priorAnswers || []).filter(Boolean);
+  let html = '';
+  if (state.intro) {
+    html += '<p class="field-help">' + escapeHtml(state.intro) + '</p>';
+  }
+  state.items.forEach((item, index) => {
+    const value = (index < prior.length ? prior[index] : '');
+    html += '<div class="field"><label>' + escapeHtml(item) + '</label>' +
+      '<textarea id="questionAnswer-' + index + '" rows="3" placeholder="Brief note, or leave blank.">' +
+      escapeHtml(value) + '</textarea></div>';
+  });
+  const freeformValue = (prior.length > state.items.length ? prior[state.items.length] : '');
+  html += '<div class="field"><label>' + escapeHtml(state.fieldLabel) + '</label>' +
+    '<textarea id="questionFreeform" rows="2" placeholder="Anything else true that the base resume omits — or leave blank.">' +      escapeHtml(freeformValue) + '</textarea></div>';
+  host.innerHTML = html;
+}
+
+function collectQuestionAnswers() {
+  const answers = [];
+  let index = 0;
+  while ($('#questionAnswer-' + index)) {
+    const ta = $('#questionAnswer-' + index);
+    if (ta) answers.push(normalizeWhitespace(ta.value));
+    index += 1;
+  }
+  const freeform = $('#questionFreeform');
+  if (freeform) answers.push(normalizeWhitespace(freeform.value));
+  return answers.filter(Boolean).join('\n');
+}
+
+function splitClarificationsToAnswers(questions, clarifications) {
+  if (!questions || !questions.items || !clarifications) return null;
+  const count = questions.items.length;
+  const lines = clarifications.split('\n').map((l) => normalizeWhitespace(l)).filter(Boolean);
+  const answers = [];
+  for (let i = 0; i < count; i += 1) {
+    answers.push(lines[i] || '');
+  }
+  if (lines.length > count) {
+    answers.push(lines.slice(count).join('\n'));
+  }
+  return answers.length ? answers : null;
+}
+
+function openQuestionsModal(state) {
+  renderQuestionsUI(state);
+  $('#questionsWrap').hidden = false;
+  $('#jobProgress').hidden = true;
+  const first = $('#questionAnswer-0');
+  if (first) setTimeout(() => first.focus(), 60);
+}
+
+function closeQuestionsModal() {
+  $('#questionsWrap').hidden = true;
+  $('#questionsFields').innerHTML = '';
 }
 
 // ---------------------------------------------------------------- Page fetching
@@ -1927,13 +2283,13 @@ function companyFromDomain(url) {
 
 // ---------------------------------------------------------------- Gemini
 
-async function buildJobPack(job) {
+async function buildJobPack(job, clarifications) {
   const key = state.geminiKey.trim();
   if (!key) {
     return { ...fallbackPack(job), source: 'basic' };
   }
   try {
-    const pack = await generateWithGemini(job, key);
+    const pack = await generateWithGemini(job, key, clarifications);
     return { ...pack, source: 'ai' };
   } catch (err) {
     console.warn('Gemini request failed', err);
@@ -1959,7 +2315,7 @@ function profileHeader(profile) {
   return lines.join('\n');
 }
 
-function buildPrompt(job) {
+function buildPrompt(job, clarifications) {
   const profile = state.profile;
   const links = profile.links || {};
   const header = profileHeader(profile);
@@ -1976,32 +2332,55 @@ function buildPrompt(job) {
     'Skills: ' + ((profile.skills || []).join(', ') || '—')
   ].join('\n');
 
-  return [
-    'You are an expert resume writer and interview coach. Tailor the candidate’s resume to the job posting and prepare interview material.',
-    '',
-    'Rules:',
-    '- Never invent employers, job titles, dates, degrees, certifications, or metrics.',
-    '- Rephrase, reorder, and emphasize real experience. Only include a keyword if the candidate’s resume already supports it.',
-    '- Keep the resume factual and plain text. Use ALL-CAPS section headings. No markdown symbols such as ** or #.',
-    '- Open the resume with this exact header block, copied verbatim as the first lines. Never alter spelling, email, phone, or links:',
-    header || '(no profile header available)',
-    '- Draw all facts from the candidate profile and base resume together. If a detail is not in either, leave it out.',
-    '- Interview prep must be plain text with three sections in this order: LIKELY QUESTIONS, QUESTIONS TO ASK, TOPICS TO REVIEW.',
-    '- Under LIKELY QUESTIONS, write exactly 6 numbered questions in the form "1. Question?" and put a "Talking point: ..." line under each one.',
-    '- Under QUESTIONS TO ASK, write 3 numbered questions. Under TOPICS TO REVIEW, write 5 bullet points starting with "- ".',
-    '',
+  const sourcesBlock = [
     'CANDIDATE PROFILE',
     profileBlock,
     '',
     'BASE RESUME',
     (profile.resumeText || '').slice(0, 20000),
+    ''
+  ];
+
+  const clarificationsBlock = clarifications
+    ? [
+      'CANDIDATE CLARIFICATIONS (user-confirmed only)',
+      'These are the only facts you may add that are not already in the profile or base resume.',
+      'If a detail is not in the profile, the base resume, or these clarifications, leave it out.',
+      String(clarifications)
+    ]
+    : [];
+
+  const jobBlock = [
     '',
     'JOB POSTING',
     'URL: ' + job.url,
     'Company (detected): ' + (job.company || 'unknown'),
     'Role (detected): ' + (job.position || 'unknown'),
     'Description:',
-    (job.description || '').slice(0, 20000),
+    (job.description || '').slice(0, 20000)
+  ];
+
+  return [
+    'You are an expert resume writer and interview coach. Tailor the candidate’s resume to the job posting and prepare interview material.',
+    '',
+    'Sources of truth (in this order): the CANDIDATE PROFILE, the BASE RESUME, and, only if present, CANDIDATE CLARIFICATIONS.',
+    'The job posting is for tailoring emphasis and wording only. It is NOT a source of facts about the candidate.',
+    '',
+    'Rules:',
+    '- Never invent employers, job titles, dates, degrees, certifications, school names, metrics, or numbers.',
+    '- If a detail is not stated in the profile, the base resume, or the clarifications, leave it out. Prefer a honest gap over an invented one.',
+    '- Rephrase, reorder, and emphasize real experience. Only include a keyword if the candidate’s materials already support it.',
+    '- The resume must be plain text, fit on one page, and use ALL-CAPS section headings. No markdown symbols such as ** or #. No tables.',
+    '- Open the resume with this exact header block, copied verbatim as the first lines. Never alter spelling, email, phone, or links:',
+    header || '(no profile header available)',
+    '- Keep the whole resume short enough to fit one page. Lead with the experience most relevant to the role; keep bullets tight.',
+    '- Interview prep must be plain text with three sections in this order: LIKELY QUESTIONS, QUESTIONS TO ASK, TOPICS TO REVIEW.',
+    '- Under LIKELY QUESTIONS, write exactly 6 numbered questions in the form "1. Question?" and put a "Talking point: ..." line under each one.',
+    '- Under QUESTIONS TO ASK, write 3 numbered questions. Under TOPICS TO REVIEW, write 5 bullet points starting with "- ".',
+    '',
+    ...sourcesBlock,
+    ...clarificationsBlock,
+    ...jobBlock,
     '',
     'Return ONLY valid JSON in this exact shape:',
     '{"company":"","position":"","resume":"","interviewPrep":""}',
@@ -2009,8 +2388,8 @@ function buildPrompt(job) {
   ].join('\n');
 }
 
-async function generateWithGemini(job, key) {
-  const prompt = buildPrompt(job);
+async function generateWithGemini(job, key, clarifications) {
+  const prompt = buildPrompt(job, clarifications);
   const text = await geminiRequest(prompt, key);
   const parsed = parseJsonBlock(text);
 
@@ -2036,6 +2415,82 @@ function ensureResumeHeader(resume, profile) {
   if (hasName || hasEmail) return resume;
 
   return header + '\n\n' + resume;
+}
+
+// ---------------------------------------------------------------- Local resume verification
+
+const DATE_PATTERN = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2},?\s+\d{4}\b/i;
+const YEAR_PATTERN = /\b(?:19|20)\d{2}\b/;
+const NUMBER_METRIC_PATTERN = /\b(\d+(?:\.\d+)?%|\d+\+?\s*(?:x|times|fold)|(?:more than|over|up to|increased|reduced|grew|saved|generated|led|managed|led a team of|team of)\s+\d+)\b/i;
+const COMPANY_LIKE_PATTERN = /\b[A-Z][A-Za-z&.'-]{2,90}\b/;
+
+function scanForPotentiallyInventedFacts(resumeText, profile, baseResume, clarifications) {
+  const haystacks = [
+    profile.name, profile.headline, profile.email, profile.phone, profile.location,
+    (profile.links || []).linkedin, (profile.links || []).github, (profile.links || []).website,
+    profile.summary, ...(profile.skills || []),
+    baseResume,
+    clarifications
+  ].filter(Boolean).map(String);
+
+  const normalized = (v) => (v || '').toLowerCase();
+  const inAnySource = (token) => haystacks.some((h) => normalized(h).includes(normalized(token)));
+
+  const flagged = [];
+  const lines = resumeText.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+
+    const dateMatch = line.match(DATE_PATTERN);
+    if (dateMatch && !inAnySource(dateMatch[0]) && !inAnySource(profile.email)) {
+      flagged.push({ line, reason: 'date', detail: dateMatch[0] });
+      continue;
+    }
+
+    if (YEAR_PATTERN.test(line)) {
+      const yearMatch = line.match(YEAR_PATTERN);
+      if (yearMatch && !inAnySource(yearMatch[0])) {
+        flagged.push({ line, reason: 'year', detail: yearMatch[0] });
+        continue;
+      }
+    }
+
+    const metricMatch = line.match(NUMBER_METRIC_PATTERN);
+    if (metricMatch && !inAnySource(metricMatch[0])) {
+      flagged.push({ line, reason: 'metric', detail: metricMatch[0] });
+      continue;
+    }
+
+    if (companyLiker(line) && !inAnySource(line) && !looksLikeOwnName(line, profile)) {
+      const candidate = line.match(COMPANY_LIKE_PATTERN);
+      if (candidate && candidate[0].length > 2) {
+        flagged.push({ line, reason: 'possible company or org name', detail: candidate[0] });
+      }
+    }
+  }
+
+  return flagged;
+}
+
+function companyLiker(line) {
+  const lower = line.toLowerCase();
+  return /inc\.?|llc|ltd|\bcorp\.?\b|co\.|gmbh|ag|sa|S\.A\.|pty\s*limited|limited\s*liability/i.test(lower)
+    || /^(?:at|with|led|managed|worked|senior|junior|staff|principal|lead|head of|director of|vp of)\b/i.test(lower);
+}
+
+function looksLikeOwnName(line, profile) {
+  if (!profile.name) return false;
+  return line.toLowerCase().includes(profile.name.toLowerCase())
+    || line.toLowerCase().includes((profile.email || '').split('@')[0].toLowerCase());
+}
+
+function verifyResume(resumeText, application) {
+  const profile = state.profile;
+  const baseResume = profile.resumeText || '';
+  const clarifications = application.clarifications || '';
+  const flagged = scanForPotentiallyInventedFacts(resumeText, profile, baseResume, clarifications);
+  return flagged;
 }
 
 async function geminiRequest(prompt, key) {
@@ -2251,7 +2706,9 @@ function setApplicationTab(tab) {
   });
 
   $$('.app-panel').forEach((panel) => {
-    panel.classList.toggle('active', panel.dataset.appPanel === target);
+    const active = panel.dataset.appPanel === target;
+    panel.classList.toggle('active', active);
+    panel.setAttribute('aria-hidden', String(!active));
   });
 
   if (target === 'practice') renderPractice();
@@ -2276,7 +2733,16 @@ const RESUME_HEADING_WORDS = [
 function cleanResumeHeading(line) {
   return String(line || '')
     .replace(/^[\s#]+/, '')
+    .replace(/^[*_]+|[*_]+$/g, '')
     .replace(/[:：]\s*$/, '')
+    .trim();
+}
+
+function cleanResumeInline(value) {
+  return String(value || '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
     .trim();
 }
 
@@ -2328,13 +2794,13 @@ function parseResumeDocument(text) {
   const blankIndex = mainLines.findIndex((line) => !line.trim());
 
   if (firstKnownHeading > 0) {
-    headerLines = mainLines.slice(0, firstKnownHeading).map((line) => line.trim()).filter(Boolean);
+    headerLines = mainLines.slice(0, firstKnownHeading).map((line) => cleanResumeInline(line)).filter(Boolean);
     bodyStart = firstKnownHeading;
   } else if (firstKnownHeading < 0 && blankIndex >= 0) {
-    headerLines = mainLines.slice(0, blankIndex).map((line) => line.trim()).filter(Boolean);
+    headerLines = mainLines.slice(0, blankIndex).map((line) => cleanResumeInline(line)).filter(Boolean);
     bodyStart = blankIndex + 1;
   } else if (firstKnownHeading < 0) {
-    headerLines = mainLines.map((line) => line.trim()).filter(Boolean);
+    headerLines = mainLines.map((line) => cleanResumeInline(line)).filter(Boolean);
     bodyStart = mainLines.length;
   }
 
@@ -2380,7 +2846,7 @@ function parseResumeDocument(text) {
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    const value = paragraph.join(' ').trim();
+    const value = paragraph.join('\n').trim();
     paragraph = [];
     if (value) ensureSection().items.push({ type: 'p', text: value });
   };
@@ -2409,12 +2875,12 @@ function parseResumeDocument(text) {
       flushParagraph();
       ensureSection().items.push({
         type: 'li',
-        text: line.replace(/^[-•*–—]\s+/, '').trim()
+        text: cleanResumeInline(line.replace(/^[-•*–—]\s+/, ''))
       });
       continue;
     }
 
-    paragraph.push(line);
+    paragraph.push(cleanResumeInline(line));
   }
 
   flushParagraph();
@@ -2545,13 +3011,23 @@ async function buildResumePdf(application) {
 
     setText(size, style, color);
     const lineHeight = size * leading;
-    const lines = doc.splitTextToSize(text, contentWidth - indent);
-    lines.forEach((line, index) => {
-      ensureSpace(lineHeight);
-      if (bullet && index === 0) doc.text('•', margin + 2, y + size);
-      doc.text(line, margin + indent, y + size);
-      y += lineHeight;
+    const logicalLines = text.split('\n');
+
+    logicalLines.forEach((logicalLine) => {
+      const value = logicalLine.trim();
+      if (!value) {
+        y += lineHeight * 0.45;
+        return;
+      }
+      const lines = doc.splitTextToSize(value, contentWidth - indent);
+      lines.forEach((line, index) => {
+        ensureSpace(lineHeight);
+        if (bullet && index === 0) doc.text('•', margin + 2, y + size);
+        doc.text(line, margin + indent, y + size);
+        y += lineHeight;
+      });
     });
+
     y += gap;
   };
 
@@ -2960,10 +3436,10 @@ function practiceQuestionHtml(questions, session) {
     '<span>Question ' + (index + 1) + ' of ' + questions.length + '</span>' +
     '<span>' + percent + '% complete</span>' +
     '</div>' +
-    '<div class="practice-progress"><span style="width:' + percent + '%"></span></div>' +
+    '<div class="practice-progress" role="progressbar" aria-label="Practice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><span style="width:' + percent + '%"></span></div>' +
     '<h4 class="practice-question">' + escapeHtml(question.text) + '</h4>' +
     '<div class="practice-hint" id="practiceHint" hidden>' + escapeHtml(question.hint) + '</div>' +
-    '<textarea class="practice-answer" id="practiceAnswer" placeholder="Write your answer the way you would say it out loud…">' + escapeHtml(answer) + '</textarea>' +
+    '<textarea class="practice-answer" id="practiceAnswer" aria-label="Your answer to question ' + (index + 1) + '" placeholder="Write your answer the way you would say it out loud…">' + escapeHtml(answer) + '</textarea>' +
     '<div class="practice-answer-row">' +
     '<span id="practiceWordCount">' + words + (words === 1 ? ' word' : ' words') + '</span>' +
     '<button class="btn ghost small" type="button" data-practice="hint">Show a hint</button>' +
@@ -3011,7 +3487,7 @@ function practiceResultsHtml(questions, session) {
   }).join('');
 
   return '<div class="practice-result-hero">' +
-    '<div class="score-ring ' + tone + '" style="--score:' + score + '"><span>' + score + '<small>/100</small></span></div>' +
+    '<div class="score-ring ' + tone + '" style="--score:' + score + '" role="img" aria-label="Overall score ' + score + ' out of 100"><span>' + score + '<small>/100</small></span></div>' +
     '<div class="practice-result-copy"><h4>' + headline + '</h4><p>' + summary + '</p></div>' +
     '</div>' +
     '<div class="practice-actions" style="border-top:0; padding-top:4px;">' +
@@ -3077,15 +3553,22 @@ function handlePracticeInput(event) {
   const label = $('#practiceWordCount');
   if (label) label.textContent = count + (count === 1 ? ' word' : ' words');
 
+  const appId = currentDetailId;
+  const activeApp = currentApplication();
+  const activeSession = activeApp ? activeApp.interviewSession : null;
+  const activeIndex = activeSession ? activeSession.index : 0;
+
   clearTimeout(practiceSaveTimer);
   practiceSaveTimer = setTimeout(() => {
-    const application = currentApplication();
-    const session = application ? application.interviewSession : null;
-    if (!application || !session || !session.started || session.completed) return;
+    const target = state.applications.find((app) => String(app.id) === String(appId));
+    const session = target ? target.interviewSession : null;
+    if (!target || !session || !session.started || session.completed) return;
 
-    const questions = practiceQuestions(application);
+    const questions = practiceQuestions(target);
     ensurePracticeAnswers(session, questions.length);
-    session.answers[session.index] = input.value;
+    if (activeIndex < 0 || activeIndex >= session.answers.length) return;
+
+    session.answers[activeIndex] = input.value;
     saveApplications();
   }, 400);
 }
@@ -3429,6 +3912,7 @@ function resetAll() {
   currentDetailId = null;
   renderedApplicationId = null;
   applicationTab = 'overview';
+  applicationReturnPage = 'dashboard';
   clearTimeout(practiceSaveTimer);
   workingModel = null;
 
@@ -3501,7 +3985,7 @@ function bindEvents() {
     const eventDel = event.target.closest('[data-event-del]');
     if (eventDel) {
       event.preventDefault();
-      removeEvent(eventDel.dataset.eventDel);
+      removeEventConfirmed(eventDel.dataset.eventDel);
       return;
     }
 
@@ -3564,7 +4048,12 @@ function bindEvents() {
   if (fillBtn) fillBtn.addEventListener('click', fillProfileFromResume);
 
   const clearBtn = $('#resumeClearBtn');
-  if (clearBtn) clearBtn.addEventListener('click', clearResume);
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    if (state.profile.resumeText) {
+      if (!confirm('Clear the pasted resume? This will not delete the original file.')) return;
+    }
+    clearResume();
+  });
 
   const search = $('#searchInput');
   if (search) search.addEventListener('input', renderTracker);
@@ -3573,6 +4062,25 @@ function bindEvents() {
 
   const addForm = $('#addJobForm');
   if (addForm) addForm.addEventListener('submit', handleAddJobSubmit);
+
+  const questionsForm = $('#questionsForm');
+  if (questionsForm) {
+    questionsForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (questionsResolver) resolveQuestionsResponse('answered');
+      else if (verifySession) regenerateFromVerify();
+    });
+  }
+
+  const questionsWrap = $('#questionsWrap');
+  if (questionsWrap) {
+    questionsWrap.addEventListener('click', (event) => {
+      if (!event.target.closest('[data-close]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (questionsResolver) resolveQuestionsResponse('skipped');
+    });
+  }
 
   const retry = $('#retryAddBtn');
   if (retry) {

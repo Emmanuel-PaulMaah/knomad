@@ -20,11 +20,13 @@ No build step, no backend, no account. Your profile, resume, and applications li
 
 1. Click the **+** on the dashboard (or **Add job** in the top bar).
 2. Paste the posting URL.
-3. knomad fetches the page, pulls out the company, role, and description, then produces:
+3. Answer the short **Quick check** step: knomad points at requirements the posting stresses that your base resume doesn't obviously cover. Add a note only if it's true, choose **Use my answers**, or choose **Skip &amp; generate**. Esc closes the whole flow without saving.
+4. knomad fetches the page, pulls out the company, role, and description, then produces:
    - a resume rewritten for that posting,
    - interview questions with talking points, questions to ask, and topics to review,
    - a tracker entry marked **Applied**.
-4. The saved application opens as a full page so you can change status, add notes, schedule an interview, preview or download the resume, and practice the interview questions.
+5. If the draft mentions dates, years, metrics, or company names that aren't in your profile or base resume, a **Before filing** screen lists each one. Choose **Edit answers and regenerate** to send new notes through the draft again, **Save this resume** if the detail is real, or **Discard &amp; start over**.
+6. The saved application opens as a full page so you can change status, add notes, schedule an interview, preview or download the resume, and practice the interview questions.
 
 If the page blocks automated readers, open the *Paste the description* field and drop the text in. knomad uses it directly.
 

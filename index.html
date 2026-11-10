@@ -2597,12 +2597,12 @@
           </div>
 
           <div class="app-tabs" role="tablist" aria-label="Application sections">
-            <button class="app-tab active" type="button" role="tab" aria-selected="true" data-app-tab="overview">Overview</button>
-            <button class="app-tab" type="button" role="tab" aria-selected="false" data-app-tab="resume">Resume</button>
-            <button class="app-tab" type="button" role="tab" aria-selected="false" data-app-tab="practice">Interview practice</button>
+            <button class="app-tab active" id="appTabOverview" type="button" role="tab" aria-selected="true" aria-controls="appPanelOverview" data-app-tab="overview">Overview</button>
+            <button class="app-tab" id="appTabResume" type="button" role="tab" aria-selected="false" aria-controls="appPanelResume" data-app-tab="resume">Resume</button>
+            <button class="app-tab" id="appTabPractice" type="button" role="tab" aria-selected="false" aria-controls="appPanelPractice" data-app-tab="practice">Interview practice</button>
           </div>
 
-          <div class="app-panel active" role="tabpanel" data-app-panel="overview">
+          <div class="app-panel active" id="appPanelOverview" role="tabpanel" aria-labelledby="appTabOverview" data-app-panel="overview">
             <div class="app-grid">
               <div class="stack">
                 <div class="card">
@@ -2666,7 +2666,7 @@
             </div>
           </div>
 
-          <div class="app-panel" role="tabpanel" data-app-panel="resume">
+          <div class="app-panel" id="appPanelResume" role="tabpanel" aria-labelledby="appTabResume" data-app-panel="resume">
             <div class="card resume-card">
               <div class="card-head resume-card-head">
                 <div>
@@ -2684,7 +2684,7 @@
             </div>
           </div>
 
-          <div class="app-panel" role="tabpanel" data-app-panel="practice">
+          <div class="app-panel" id="appPanelPractice" role="tabpanel" aria-labelledby="appTabPractice" data-app-panel="practice">
             <div class="card practice-card">
               <div class="card-head">
                 <h3>Interview practice</h3>
@@ -2736,6 +2736,38 @@
         </form>
       </div>
 
+      <div id="questionsWrap" hidden>
+        <p class="eyebrow">Quick check</p>
+        <h2>A few questions about your background</h2>
+        <p class="modal-sub">knomad only uses what you confirm here, plus your base resume and this posting. Answer briefly — short notes are fine.</p>
+
+        <form id="questionsForm">
+          <div id="questionsFields"></div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn ghost" data-close>Skip &amp; generate</button>
+            <button type="submit" class="btn primary">Use my answers</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="verifyWrap" hidden>
+        <p class="eyebrow">Before filing</p>
+        <h2>Review what was generated</h2>
+        <p class="modal-sub" id="verifySub"></p>
+
+        <details class="paste-details">
+          <summary>Highlighted passages to double-check</summary>
+          <div class="output" id="verifyDetails" style="max-height:260px"></div>
+        </details>
+
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="verifyDiscardBtn">Discard &amp; start over</button>
+          <button type="button" class="btn subtle" id="verifyEditBtn">Edit answers and regenerate</button>
+          <button type="button" class="btn primary" id="verifySaveBtn">Save this resume</button>
+        </div>
+      </div>
+
       <div id="jobProgress" hidden>
         <p class="eyebrow">Working</p>
         <h2>Tailoring your application</h2>
@@ -2743,7 +2775,9 @@
 
         <ol class="steps" id="stepList">
           <li data-step="read"><span class="dot"></span><span class="step-label">Reading the job page</span><span class="step-note"></span></li>
+          <li data-step="questions"><span class="dot"></span><span class="step-label">Confirming your background</span><span class="step-note"></span></li>
           <li data-step="tailor"><span class="dot"></span><span class="step-label">Tailoring resume &amp; interview prep</span><span class="step-note"></span></li>
+          <li data-step="verify"><span class="dot"></span><span class="step-label">Checking for invented details</span><span class="step-note"></span></li>
           <li data-step="save"><span class="dot"></span><span class="step-label">Filing it in your tracker</span><span class="step-note"></span></li>
         </ol>
 
