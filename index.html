@@ -73,6 +73,32 @@
 
     /* ---------- Shell ---------- */
 
+    .boot-error {
+      position: fixed;
+      inset: 14px 14px auto 14px;
+      z-index: 200;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 107, 107, 0.55);
+      border-radius: 12px;
+      background: #2a1416;
+      color: #ffd9d9;
+      font-size: 12.5px;
+      line-height: 1.55;
+      box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45);
+    }
+
+    .boot-error[hidden] { display: none; }
+    .boot-error strong { color: #fff; }
+    .boot-error code {
+      padding: 1px 5px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 11.5px;
+    }
+
     .rail {
       position: fixed;
       inset: 0 auto 0 0;
@@ -195,6 +221,8 @@
     .avatar {
       width: 42px;
       height: 42px;
+      padding: 0;
+      overflow: hidden;
       border-radius: 50%;
       border: 1px solid var(--line-strong);
       background: var(--panel-2);
@@ -207,6 +235,17 @@
     }
 
     .avatar:hover { border-color: var(--accent); color: var(--accent); }
+
+    .avatar img,
+    .identity-avatar img,
+    .profile-photo img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    .avatar.has-photo:hover { border-color: var(--accent); }
 
     /* ---------- Pages ---------- */
 
@@ -341,6 +380,7 @@
       width: 58px;
       height: 58px;
       flex-shrink: 0;
+      overflow: hidden;
       border-radius: 18px;
       display: grid;
       place-items: center;
@@ -1122,6 +1162,46 @@
       gap: 16px;
       padding-top: 20px;
       border-top: 1px solid var(--line);
+    }
+
+    /* ---------- Profile photo ---------- */
+
+    .profile-photo-row {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding-bottom: 20px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .profile-photo {
+      width: 76px;
+      height: 76px;
+      flex-shrink: 0;
+      overflow: hidden;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      background: var(--panel-2);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 18px;
+      letter-spacing: 0.04em;
+    }
+
+    .profile-photo-copy { min-width: 0; }
+
+    .profile-photo-copy strong { display: block; font-size: 13px; margin-bottom: 2px; }
+
+    .profile-photo-copy .field-help { margin: 0 0 10px; max-width: 46ch; }
+
+    .profile-photo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    @media (max-width: 520px) {
+      .profile-photo-row { align-items: flex-start; }
+      .profile-photo { width: 64px; height: 64px; }
     }
 
     /* ---------- Dropzone ---------- */
@@ -2184,15 +2264,274 @@
 
       .resume-body section { break-inside: avoid; }
     }
+    /* ---------- Job search ---------- */
+
+    .search-card { margin-bottom: 16px; }
+
+    .filters .search-role-field { flex: 2.6 1 260px; }
+    .filters .search-place-field { flex: 1 1 180px; }
+
+    #jobSearchBtn { height: 41px; }
+
+    .search-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 15px;
+    }
+
+    .checkline {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12.5px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .checkline input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .checkline strong { color: var(--text); font-weight: 600; }
+
+    .provider-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .provider-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--bg-2);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+
+    .provider-chip:hover { color: var(--text); border-color: var(--line-strong); }
+
+    .provider-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--line-strong);
+    }
+
+    .provider-chip.ok .provider-dot { background: var(--accent); }
+    .provider-chip.empty .provider-dot { background: var(--amber); }
+    .provider-chip.error .provider-dot { background: var(--red); }
+
+    .provider-count {
+      color: var(--muted);
+      font-family: 'Inter', system-ui, sans-serif;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .job-results { display: grid; gap: 10px; margin-top: 16px; }
+
+    .job-result {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, var(--panel), #111617 150%);
+      transition: border-color 0.16s;
+    }
+
+    .job-result:hover { border-color: var(--line-strong); }
+
+    .job-main { display: grid; gap: 7px; min-width: 0; flex: 1; }
+
+    .job-title-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex-wrap: wrap;
+    }
+
+    .job-title {
+      font-family: 'Bricolage Grotesque', 'Inter', sans-serif;
+      font-size: 15.5px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .job-title:hover { color: var(--accent); }
+
+    .job-provider {
+      flex-shrink: 0;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+
+    .job-provider:hover { color: var(--accent); border-color: var(--accent-hard); }
+
+    .job-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .job-meta > span { padding: 0 7px; }
+    .job-meta > span:first-child { padding-left: 0; color: #aab8b4; }
+    .job-meta .sep { padding: 0; opacity: 0.35; }
+
+    .job-elig {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .job-elig.open { color: var(--accent); }
+    .job-elig.region { color: #8be9ff; }
+    .job-elig.closed { color: var(--amber); }
+
+    .job-salary { color: #8be9ff; }
+
+    .job-actions {
+      display: flex;
+      flex-shrink: 0;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .search-intro {
+      padding: 26px 24px;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--bg-2);
+      text-align: center;
+    }
+
+    .search-intro h3 { font-size: 18px; margin-bottom: 8px; }
+    .search-intro p {
+      max-width: 54ch;
+      margin: 0 auto 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .search-examples {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .search-example {
+      padding: 7px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+      transition: color 0.16s, border-color 0.16s;
+    }
+
+    .search-example:hover { border-color: var(--accent); color: var(--accent); }
+
+    .search-error {
+      padding: 22px;
+      border: 1px solid rgba(255, 107, 107, 0.25);
+      border-radius: var(--radius);
+      background: rgba(255, 107, 107, 0.06);
+    }
+
+    .search-error h3 { font-size: 16px; margin-bottom: 6px; }
+    .search-error p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+
+    .job-skeleton {
+      height: 84px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(90deg, var(--panel), var(--panel-2), var(--panel));
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+    }
+
+    @keyframes shimmer { to { background-position: -200% 0; } }
+
+    .search-foot {
+      margin: 16px 2px 0;
+      color: var(--muted);
+      font-size: 11.5px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 760px) {
+      .filters .search-role-field,
+      .filters .search-place-field { flex: 1 1 100%; }
+      #jobSearchBtn { width: 100%; }
+      .job-result { flex-direction: column; }
+      .job-actions { width: 100%; }
+      .job-actions .btn { flex: 1; }
+      .job-meta > span:first-child { padding-left: 7px; }
+    }
+
+    @media (max-width: 420px) {
+      .rail { padding: 0 10px; }
+      .rail-nav { gap: 2px; }
+      .rail-btn { width: 34px; height: 34px; }
+    }
+
   </style>
 </head>
 <body>
+  <div class="boot-error" id="appBootError" role="alert" hidden>
+    <div>
+      <strong>knomad could not start.</strong>
+      <span data-boot-detail>The app script did not run.</span>
+      Open the browser console for the exact error, or run <code>npm run dev</code> and visit
+      <code>http://localhost:8000</code>.
+    </div>
+  </div>
+
   <!-- Rail -->
   <aside class="rail">
     <div class="brand" title="knomad">k</div>
     <nav class="rail-nav" id="railNav" aria-label="Sections">
       <button class="rail-btn active" data-page="dashboard" title="Dashboard" aria-label="Dashboard">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      </button>
+      <button class="rail-btn" data-page="search" title="Find jobs" aria-label="Find jobs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
       </button>
       <button class="rail-btn" data-page="tracker" title="Applications" aria-label="Applications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
@@ -2310,6 +2649,57 @@
           </div>
         </section>
 
+        <!-- Job search -->
+        <section class="page" id="searchPage">
+          <div class="page-head">
+            <div>
+              <p class="page-desc">Type a role. knomad asks three public remote-job APIs, then keeps the postings whose stated location includes Nigeria — or everyone.</p>
+              <p class="label-mono" id="jobSearchCount">No search yet</p>
+            </div>
+          </div>
+
+          <div class="card search-card">
+            <form id="jobSearchForm" class="filters" autocomplete="off">
+              <div class="field search-role-field">
+                <label for="jobSearchRole">Role</label>
+                <input type="search" id="jobSearchRole" name="role" placeholder="e.g. frontend developer, product manager, nurse" required>
+              </div>
+              <div class="field search-place-field">
+                <label for="jobSearchLocation">Open to roles in</label>
+                <input type="text" id="jobSearchLocation" name="place" list="jobSearchPlaces" value="Nigeria">
+                <datalist id="jobSearchPlaces">
+                  <option value="Nigeria"></option>
+                  <option value="Ghana"></option>
+                  <option value="Kenya"></option>
+                  <option value="South Africa"></option>
+                  <option value="Egypt"></option>
+                  <option value="Rwanda"></option>
+                </datalist>
+              </div>
+              <button class="btn primary" type="submit" id="jobSearchBtn">Search jobs</button>
+            </form>
+
+            <div class="search-toolbar">
+              <label class="checkline" for="jobSearchStrict">
+                <input type="checkbox" id="jobSearchStrict" checked>
+                <span>Only roles open to <strong id="jobSearchTargetLabel">Nigeria</strong></span>
+              </label>
+              <span class="field-help">Role + location come from each posting. No AI is used.</span>
+            </div>
+
+            <div class="provider-row" id="jobSearchProviders"></div>
+          </div>
+
+          <div id="jobSearchResults" class="job-results" aria-live="polite"></div>
+
+          <p class="search-foot">
+            Listings come from the public <a href="https://jobicy.com/jobs" target="_blank" rel="noopener">Jobicy</a>,
+            <a href="https://remoteok.com" target="_blank" rel="noopener follow">Remote OK</a>, and
+            <a href="https://remotive.com/remote-jobs" target="_blank" rel="noopener">Remotive</a> APIs.
+            Eligibility is read from each posting's location field — confirm it on the job page before you apply.
+          </p>
+        </section>
+
         <!-- Tracker -->
         <section class="page" id="trackerPage">
           <div class="page-head">
@@ -2413,6 +2803,18 @@
             <div class="form-section">
               <h3>Basics</h3>
               <p>These details head every tailored resume.</p>
+              <div class="profile-photo-row">
+                <div class="profile-photo" id="profilePhotoPreview" aria-hidden="true">k</div>
+                <div class="profile-photo-copy">
+                  <strong>Profile photo</strong>
+                  <p class="field-help">Shows on your dashboard and in the top bar. Stored in this browser and synced with your profile.</p>
+                  <div class="profile-photo-actions">
+                    <button type="button" class="btn ghost small" id="profilePhotoBtn">Upload photo</button>
+                    <button type="button" class="btn ghost small" id="profilePhotoRemove">Remove</button>
+                    <input type="file" id="profilePhotoFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+                  </div>
+                </div>
+              </div>
               <div class="form-grid">
                 <div class="field">
                   <label for="profileName">Full name</label>
@@ -2507,17 +2909,64 @@
         <!-- Settings -->
         <section class="page" id="settingsPage">
           <div class="page-head">
-            <p class="page-desc">Your key and your data live only in this browser.</p>
+            <p class="page-desc">Your Gemini key stays in this browser. Sign in to sync everything else.</p>
           </div>
 
           <div class="settings-grid">
+            <div class="card" id="accountCard">
+              <div class="card-head">
+                <h3>Cloud sync</h3>
+                <span class="label-mono" id="accountBadge">Off</span>
+              </div>
+              <p id="accountIntro" style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px;">
+                Sign in to sync your profile, applications, and archive originals across devices. Your Gemini key never leaves this device.
+              </p>
+
+              <div id="accountSignedOut">
+                <div class="field">
+                  <label for="accountEmail">Email</label>
+                  <input type="email" id="accountEmail" autocomplete="email" placeholder="you@example.com">
+                </div>
+                <div class="field">
+                  <label for="accountPassword">Password</label>
+                  <input type="password" id="accountPassword" autocomplete="current-password" placeholder="At least 8 characters">
+                </div>
+                <div class="field">
+                  <label for="accountName">Name</label>
+                  <input type="text" id="accountName" autocomplete="name" placeholder="Only used when creating an account">
+                </div>
+                <div class="modal-actions" style="justify-content: flex-start; margin-top: 12px;">
+                  <button class="btn primary" id="accountSignInBtn" type="button">Sign in</button>
+                  <button class="btn ghost" id="accountSignUpBtn" type="button">Create account</button>
+                </div>
+              </div>
+
+              <div id="accountSignedIn" hidden>
+                <p style="margin: 0 0 12px; font-size: 13px;">
+                  Signed in as <strong id="accountEmailLabel"></strong>
+                </p>
+                <div class="status-line" id="syncStatus">
+                  <span class="lamp"></span><span id="syncStatusText">Not synced yet</span>
+                </div>
+                <div class="modal-actions" style="justify-content: flex-start; margin-top: 16px;">
+                  <button class="btn primary" id="accountSyncBtn" type="button">Sync now</button>
+                  <button class="btn ghost" id="accountSignOutBtn" type="button">Sign out</button>
+                </div>
+                <p class="field-help" style="margin-top: 10px;">
+                  Original resume files upload to Neon Object Storage. Only your signed-in user can read them.
+                </p>
+              </div>
+
+              <p class="field-help" id="accountError" hidden></p>
+            </div>
+
             <div class="card">
               <div class="card-head">
                 <h3>Google Gemini API key</h3>
                 <span class="label-mono">Optional</span>
               </div>
               <p style="margin: 0 0 10px; color: var(--muted); font-size: 12.5px;">
-                With a key, each job is rewritten by Gemini. Without one, knomad still builds a tailored draft using keyword matching.
+                With a key, each job is rewritten by Gemini straight from this browser. Without one, signing in lets knomad use the Neon AI Gateway; otherwise it builds a tailored draft with keyword matching.
               </p>
               <p style="margin: 0 0 14px;">
                 <a class="inline-link" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
@@ -2555,7 +3004,7 @@
                 <span class="label-mono" id="dataSummary">0 applications</span>
               </div>
               <p style="margin: 0 0 16px; color: var(--muted); font-size: 12.5px;">
-                Everything lives in this browser's local storage. Export a backup before clearing it.
+                Everything lives in this browser's local storage. When you're signed in, your profile and applications also sync to your Neon account. Export a backup before clearing either copy.
               </p>
               <div class="modal-actions" style="justify-content: flex-start; margin-top: 0;">
                 <button class="btn ghost" id="exportBtn" type="button">Export backup</button>
@@ -2567,7 +3016,7 @@
                 <h3>Reset</h3>
               </div>
               <p style="margin: 0 0 16px; color: var(--muted); font-size: 12.5px;">
-                Removes your profile, resume, applications, and saved key from this browser. This cannot be undone.
+                Removes your profile, resume, applications, and saved key from this browser. When signed in, the cloud copy of your profile and applications is erased too. This cannot be undone.
               </p>
               <button class="btn danger" id="resetBtn" type="button">Erase all local data</button>
             </div>
@@ -2791,6 +3240,35 @@
 
   <div class="toast-host" id="toastHost" aria-live="polite"></div>
 
-  <script src="main.js"></script>
+  <script>
+    (function () {
+      var banner = document.getElementById('appBootError');
+      var detail = banner ? banner.querySelector('[data-boot-detail]') : null;
+
+      function show(message) {
+        if (!banner) return;
+        if (message && detail) detail.textContent = message;
+        banner.hidden = false;
+      }
+
+      window.addEventListener('error', function (event) {
+        var target = event.target;
+        if (target && target !== window && target.tagName === 'SCRIPT') {
+          show('Could not load ' + (target.src || 'the app script') + '.');
+        } else if (event.message) {
+          show(event.message);
+        }
+      }, true);
+
+      window.addEventListener('DOMContentLoaded', function () {
+        window.setTimeout(function () {
+          if (!window.__knomadReady) {
+            show('The app script did not run. This page needs the Vite server; opening index.html directly will not work.');
+          }
+        }, 3000);
+      });
+    })();
+  </script>
+  <script type="module" src="/main.js"></script>
 </body>
 </html>

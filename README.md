@@ -2,19 +2,76 @@
 
 A local-first job search workspace. Add a job posting, and knomad reads the page, tailors your resume to it, drafts interview prep, and files the whole thing in your application tracker.
 
-No build step, no backend, no account. Your profile, resume, and applications live in your browser's `localStorage`.
+It works entirely offline on `localStorage`, and optionally syncs your profile, applications, and original resume files to Neon when you sign in. The Gemini API key always stays on the device.
+
+## Neon backend
+
+`neon.ts` declares one branch policy:
+
+| Service | Use |
+|---|---|
+| **Postgres** | `public.knomad_docs` — one row per profile/application document, scoped by `user_id` |
+| **Auth** | Managed Better Auth email/password sign-up and sign-in; the browser sends the session JWT to the Function |
+| **Functions** | `knomadsync` — Hono API that verifies the JWT, reads/writes documents, uploads files, proxies AI, and seals realtime queries |
+| **Object Storage** | Private `resumes` bucket for original uploaded resume files, reachable only through presigned URLs |
+| **AI Gateway** | OpenAI-compatible `/v1/chat/completions`, used when you're signed in and have no local Gemini key |
+| **Realtime** | Live SQL subscription on the signed-in user's rows; the browser pulls or applies changes immediately |
+
+Sync rules:
+
+- Each save is diffed locally and sent to the Function after a short debounce.
+- The server keeps the row with the newest `client_updated_at` (last write wins).
+- Deletions are soft (`deleted_at`) so they propagate instead of resurrecting.
+- Realtime is best-effort; a 30-second poll covers reconnects, and the app also pulls when the tab becomes visible or the network returns.
+- `knomad_gemini_key` is never included in a synced document.
 
 ## What it does
 
 - **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus a 14-day activity chart, a status breakdown, your next scheduled events, recent activity, and a preview of your base resume.
+- **Job search** — type a role, and knomad queries three public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
 - **One-click job intake** — the big **+** opens a flow that reads the job page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application.
-- **Profile** — name, headline, contact details, links, summary, skills, and your base resume. Upload a file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
+- **Profile** — name, photo, headline, contact details, links, summary, skills, and your base resume. The photo is cropped to a square, stored with the profile, and shown on the dashboard and top bar. Upload a resume file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
 - **Tracker** — search and filter applications, then open any one as a full application page with overview, resume, and interview-practice tabs.
 - **Application page** — status, notes, the job description used, scheduled interviews and reminders, a tailored resume preview, and interview practice in one place.
 - **Tailored resume document** — every generated resume is rendered as a styled document, with copy, print, and PDF download actions.
 - **Interview practice** — a step-by-step sequence: read a likely question, write your answer, move to the next one, then get an overall score and per-question feedback.
 - **Calendar** — month view of every interview and reminder, with a day list and the next 30 days at a glance.
-- **Settings** — save a Google Gemini API key, enable browser notifications, export a JSON backup, or erase all local data.
+- **Settings** — optional cloud sign-in and sync, a Google Gemini API key, browser notifications, a JSON backup export, or erase local and cloud data.
+
+## Job search
+
+Open **Find jobs** in the sidebar, type a role, and pick the country you can work from (Nigeria by default). Results show the job title, provider, stated location, and a direct link. **Track** opens the normal Add job flow with the URL, company, title, and description already filled in.
+
+The search is entirely deterministic. No model scores the roles, and no API key is needed.
+
+**Sources.** Knomad asks three public, key-less APIs that allow browser requests:
+
+| Provider | Endpoint | Notes |
+|---|---|---|
+| Jobicy | `jobicy.com/api/jobs` | Tagged search, plus Jobicy's worldwide-only feed; the last 7 days |
+| Remote OK | `remoteok.com/api` | Full public feed; needs the follow link and attribution shown in the page footer |
+| Remotive | `remotive.com/api/remote-jobs` | Latest public batch; role matching happens locally |
+
+**Eligibility.** The location string each provider publishes decides the verdict:
+
+- **Open** — mentions Nigeria (or the selected country), Worldwide, Anywhere, Global, or Africa. "South Africa" is treated as a country, not the region.
+- **Maybe** — EMEA. Nigeria is geographically in Africa, but companies often use EMEA to mean Europe and the Middle East, so these are hidden by default.
+- **Not verified** — blank, bare "Remote", or "Region not stated". Hidden by default because the posting does not actually promise your country.
+- **Restricted** — any other stated region (USA, Europe, LATAM, APAC, a city, a time-zone requirement).
+
+When a board leaves its location field blank, knomad looks in the description for an explicit `Remote:`, `Location:`, or "open to candidates in…" phrase before giving up. Results are filtered in the browser, so unchecking **Only roles open to…** is instant. If every matched role is unverified or restricted, the empty state offers a one-click **Show all matched roles** action.
+
+**Role matching.** The query is lowercased and split into tokens. Arrangement words ("remote", "full-time") and seniority words ("senior", "lead") are dropped, and small synonym groups map developer↔engineer, frontend↔front end, support↔customer service, and similar pairs. A role is kept when the share of matched tokens is at least 60% for a one- or two-token query, or 50% for a longer one. Provider-side search is loose, so this local pass is what removes unrelated listings.
+
+Provider failures are isolated: if one API is down, the other two still return results, and the provider chip shows **unavailable**. Responses are cached in memory for ten minutes.
+
+Run the search tests with:
+
+```bash
+npm run test:search
+```
+
+**Limitations.** The public feeds skew heavily toward US-only roles, and most Remote OK postings leave their location blank. A strict search can therefore return only a handful of verified roles. Eligibility is read from the posting's own metadata — always confirm the location on the job page before applying.
 
 ## One job, one flow
 
@@ -72,40 +129,81 @@ Browser notifications need a secure context (`https://` or `localhost`). On `fil
 
 ## AI mode vs. basic mode
 
-| | With a Gemini key | Without a key |
-|---|---|---|
-| Resume | Rewritten and reordered for the posting, starting from your profile header | Your base resume with the profile header plus a keyword-gap report |
-| Interview prep | Tailored questions and talking points | General questions built from the role and posting keywords |
-| Company/role detection | Done by the model when the page is unclear | Pulled from schema.org `JobPosting`, page metadata, title, and domain |
+| | With a Gemini key | Signed in, no key | Neither |
+|---|---|---|---|
+| Model route | Browser → Google Gemini | Browser → Neon Function → AI Gateway | none |
+| Resume | Rewritten and reordered for the posting, starting from your profile header | Same, using the gateway's model catalog | Your base resume with the profile header plus a keyword-gap report |
+| Interview prep | Tailored questions and talking points | Same | General questions built from the role and posting keywords |
+| Company/role detection | Done by the model when the page is unclear | Done by the model | Pulled from schema.org `JobPosting`, page metadata, title, and domain |
 
-Add a key in **Settings**, or use the link there to grab one from Google AI Studio. knomad tries `gemini-2.5-flash`, then `gemini-2.0-flash`, then `gemini-1.5-flash`, and remembers whichever responds. If the AI call fails, it saves the basic version rather than losing the application.
+Add a Gemini key in **Settings**, or use the link there to grab one from Google AI Studio. knomad tries `gemini-2.5-flash`, then `gemini-2.0-flash`, then `gemini-1.5-flash`, and remembers whichever responds. If no Google key is present but you're signed in, it asks the Function to call the Neon AI Gateway. If every route fails, it saves the basic version rather than losing the application.
+
+AI Gateway access is credit-gated on Neon. If the account has no gateway credits, `/ai/chat` returns a clear message and knomad falls back to basic mode.
 
 The prompt includes every profile variable (name, headline, email, phone, location, links, summary, skills) plus the full base resume, and forbids inventing employers, dates, degrees, or metrics. It also instructs the model to copy the profile header verbatim onto the top of the resume. If the model omits both name and email anyway, knomad prepends the profile header itself.
 
 ## Getting started
 
-Open `index.html` in a modern browser, or serve the folder locally:
-
-```bash
-npx serve .
-# or
-python -m http.server 8000
-```
-
-Playwright is the only dev dependency:
+Install dependencies and build the app:
 
 ```bash
 npm install
-npx playwright install chromium
+npm run build
+npm run dev
 ```
+
+`npm run dev` serves the app at `http://localhost:8000`. The app must be served over HTTP(S), not opened as a `file://` URL, because the auth client needs an origin and `localStorage` behaves differently per scheme.
+
+### Neon setup
+
+```bash
+neon login                     # once per machine
+neon deploy --env .env.local   # provisions auth, functions, storage, gateway, realtime
+npm run db:setup               # applies sql/schema.sql
+npm run test                   # exercises every service end to end
+```
+
+`neon deploy` writes the branch's secrets to `.env.local`. Add the three public browser URLs to the same file:
+
+```bash
+VITE_NEON_AUTH_URL=https://<branch>-neonauth.<region>.aws.neon.tech/neondb/auth
+VITE_NEON_SYNC_URL=https://<branch-id>-knomadsync<function-host-suffix>
+VITE_NEON_REALTIME_URL=wss://<realtime-host>
+```
+
+`neon deploy` prints the Function invocation URL; `neon functions get knomadsync` prints it again. `NEON_REALTIME_URL` is pulled by `neon deploy`. Rebuild after changing any `VITE_*` value.
+
+Add the app origins (`http://localhost:8000` and your production URL) as trusted domains in the Neon Auth settings, and allow them in the branch's Realtime allowed origins.
+
+### Tests
+
+`npm test` signs up a throwaway user, mints a JWT, and checks:
+
+1. Function health and injected service env.
+2. Neon Auth sign-up and `/token`.
+3. JWT verification in the Function.
+4. Postgres write, stale-write rejection, and read-back.
+5. Object Storage upload and presigned download.
+6. Realtime: sealed query + live change delivery.
+7. AI Gateway chat completion (reported as `blocked` when the account has no gateway credits).
+
+Playwright remains available for browser tests.
 
 ## Project structure
 
 ```
 knomad/
-├── index.html     # Layout, modals, and all styles (dark single-page app)
-├── main.js        # State, storage, page reading, resume parsing, Gemini, rendering
-├── package.json   # Metadata and Playwright dev dependency
+├── index.html            # Layout, modals, and all styles (dark single-page app)
+├── main.js               # State, storage, sync engine, page reading, resume parsing, AI, rendering
+├── job-search.js         # Public job APIs, eligibility rules, token matching, no AI
+├── sync.js               # Browser Neon Auth + Function + Realtime clients
+├── neon.ts               # Neon branch policy (auth, functions, bucket, gateway, realtime)
+├── src/function/index.ts # knomadsync Hono API, JWT verification, Postgres/S3/AI/Realtime
+├── sql/schema.sql        # knomad_docs table
+├── scripts/setup-db.mjs  # Applies the schema
+├── scripts/test-services.mjs # End-to-end service proof
+├── scripts/test-job-search.mjs # Eligibility and role-matching tests
+├── package.json          # Scripts and dependencies
 └── README.md
 ```
 
@@ -204,14 +302,18 @@ Stored under these `localStorage` keys:
 
 | Key | Contents |
 |---|---|
-| `knomad_profile` | Name, contact details, links, summary, skills, resume text and file name |
+| `knomad_profile` | Name, profile photo (data URL), contact details, links, summary, skills, resume text, file name, and archived file key |
 | `knomad_applications` | Applications, statuses, status history, notes, tailored resumes, interview prep, job descriptions, scheduled interviews/reminders, and practice answers/scores |
-| `knomad_gemini_key` | Your Gemini API key |
+| `knomad_gemini_key` | Your Gemini API key — device-local only, never synced |
 | `knomad_notified` | Reminder keys that have already fired, so they don't repeat |
+| `knomad_sync_clocks_<userId>` | Per-user last-write-wins timestamps |
+| `knomad_sync_cursor_<userId>` | Per-user server cursor for incremental pulls |
 
-- The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`.
+- The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`. It is never included in a synced document.
+- When you sign in, profile and application documents (and uploaded resume files) are sent to your Neon branch. Row access is scoped by the verified JWT subject.
 - Job URLs are sent to the reader services above when fetching a page.
-- Nothing else leaves the browser. **Settings → Export backup** writes a JSON file; **Erase all local data** removes everything.
+- **Settings → Export backup** writes a JSON file; **Erase all local data** removes local data and, when signed in, soft-deletes the cloud copies too.
+- Cloud sync is optional. Signing out leaves your local workspace intact.
 
 ## Known limitations
 
@@ -225,7 +327,9 @@ Stored under these `localStorage` keys:
 - **Reminders require knomad to be open** — there is no background service worker. System notifications also need notification permission and a secure context.
 - **No recurring events** — each interview or reminder is a single date and time.
 - **No import** — backups can be exported but not restored in-app yet.
-- **No tests** are configured (`npm test` is a placeholder).
+- **Cloud sync is per document** — two devices editing the same application offline resolve by last write, not by field-level merge.
+- **AI Gateway needs credits** — auth and routing work on every plan, but model requests return `paid_plan_required` until the Neon org adds gateway credits.
+- **Realtime is best-effort** — reconnects and expired sealed queries fall back to the 30-second poll.
 
 ## Possible next steps
 

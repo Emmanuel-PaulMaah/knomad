@@ -1,11 +1,35 @@
 /* knomad — local-first job search workspace */
 
+import {
+  cloudConfig,
+  signUpCloud,
+  signInCloud,
+  getCloudSession,
+  signOutCloud,
+  api,
+  subscribeToDocs,
+  closeRealtime,
+  uploadResumeFile,
+  aiChat
+} from './sync.js';
+
+import {
+  DEFAULT_TARGET,
+  PROVIDER_LINKS,
+  classifyEligibility,
+  resolveTarget,
+  searchJobs,
+  sortJobs
+} from './job-search.js';
+
 // ---------------------------------------------------------------- Storage
 
 const STORE = {
   profile: 'knomad_profile',
   applications: 'knomad_applications',
-  key: 'knomad_gemini_key'
+  key: 'knomad_gemini_key',
+  clocks: 'knomad_sync_clocks',
+  cursor: 'knomad_sync_cursor'
 };
 
 const STATUS = ['applied', 'interviewing', 'offer', 'rejected'];
@@ -123,6 +147,9 @@ function normalizePractice(raw) {
   };
 }
 
+const PROFILE_PHOTO_PX = 320;
+const PROFILE_PHOTO_PATTERN = /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+
 function defaultProfile() {
   return {
     name: '',
@@ -130,6 +157,7 @@ function defaultProfile() {
     email: '',
     phone: '',
     location: '',
+    photo: '',
     links: { linkedin: '', github: '', website: '' },
     summary: '',
     skills: [],
@@ -144,6 +172,7 @@ function normalizeProfile(raw) {
   return {
     ...base,
     ...raw,
+    photo: isProfilePhoto(raw.photo) ? raw.photo : '',
     links: { ...base.links, ...(raw.links || {}) },
     skills: Array.isArray(raw.skills) ? raw.skills.filter(Boolean) : []
   };
@@ -186,15 +215,462 @@ function normalizeApplications(raw) {
 const state = {
   profile: normalizeProfile(loadJSON(STORE.profile, null)),
   applications: normalizeApplications(loadJSON(STORE.applications, [])),
-  geminiKey: localStorage.getItem(STORE.key) || ''
+  geminiKey: localStorage.getItem(STORE.key) || '',
+  cloud: {
+    user: null,
+    status: 'off',
+    lastSync: null,
+    error: '',
+    realtime: false
+  }
 };
 
-function saveProfile() {
+function saveProfile(options = {}) {
   localStorage.setItem(STORE.profile, JSON.stringify(state.profile));
+  if (options.sync !== false) queueLocalChanges();
 }
 
-function saveApplications() {
+function saveApplications(options = {}) {
   localStorage.setItem(STORE.applications, JSON.stringify(state.applications));
+  if (options.sync !== false) queueLocalChanges();
+}
+
+// ---------------------------------------------------------------- Cloud sync
+//
+// Local storage stays the source of truth for the running UI. Every save is
+// diffed against the last known synced value and queued, then flushed to the
+// Function. Remote rows win only when their client_updated_at is newer.
+// The Gemini key is deliberately absent from every synced document.
+
+const CLOUD_POLL_MS = 30_000;
+const CLOUD_EPOCH = '1970-01-01T00:00:00.000Z';
+
+let cloudQueue = new Map();
+let cloudFlushTimer = null;
+let cloudPullInFlight = false;
+let cloudPullAgain = false;
+let cloudPollTimer = null;
+let cloudSubscription = null;
+let cloudDiffProfile = null;
+let cloudDiffApplications = new Map();
+
+function cloudReady() {
+  return cloudConfig.configured && Boolean(state.cloud.user);
+}
+
+function cloudStorageKey(name) {
+  const id = state.cloud.user && state.cloud.user.id;
+  return id ? name + '_' + id : name;
+}
+
+function loadClocks() {
+  return loadJSON(cloudStorageKey(STORE.clocks), {});
+}
+
+function saveClocks(clocks) {
+  localStorage.setItem(cloudStorageKey(STORE.clocks), JSON.stringify(clocks));
+}
+
+function readCursor() {
+  return localStorage.getItem(cloudStorageKey(STORE.cursor)) || '';
+}
+
+function writeCursor(value) {
+  if (value) localStorage.setItem(cloudStorageKey(STORE.cursor), value);
+}
+
+function nextClock(kind, docId) {
+  const clocks = loadClocks();
+  const key = kind + ':' + docId;
+  const value = Math.max(Date.now(), (Number(clocks[key]) || 0) + 1);
+  clocks[key] = value;
+  saveClocks(clocks);
+  return value;
+}
+
+function queueDoc(kind, docId, payload, deleted = false) {
+  if (!cloudReady()) return;
+  cloudQueue.set(kind + ':' + docId, {
+    kind,
+    docId,
+    payload: deleted ? null : payload,
+    deleted: Boolean(deleted),
+    clientUpdatedAt: nextClock(kind, docId)
+  });
+  clearTimeout(cloudFlushTimer);
+  cloudFlushTimer = setTimeout(flushCloudQueue, 700);
+}
+
+async function flushCloudQueue() {
+  if (!cloudReady() || !cloudQueue.size) return;
+
+  const docs = Array.from(cloudQueue.values());
+  cloudQueue = new Map();
+
+  try {
+    await api('/docs/batch', { method: 'POST', body: { docs } });
+    setCloudStatus('synced');
+  } catch (err) {
+    docs.forEach((doc) => {
+      const key = doc.kind + ':' + doc.docId;
+      if (!cloudQueue.has(key)) cloudQueue.set(key, doc);
+    });
+    setCloudStatus('error', err.message);
+    clearTimeout(cloudFlushTimer);
+    cloudFlushTimer = setTimeout(flushCloudQueue, 5000);
+  }
+}
+
+function queueLocalChanges() {
+  if (!cloudReady()) return;
+
+  const profileJson = JSON.stringify(state.profile);
+  if (cloudDiffProfile === null) {
+    cloudDiffProfile = profileJson;
+  } else if (profileJson !== cloudDiffProfile) {
+    cloudDiffProfile = profileJson;
+    queueDoc('profile', 'me', state.profile);
+  }
+
+  const present = new Set();
+  state.applications.forEach((application) => {
+    present.add(application.id);
+    const json = JSON.stringify(application);
+    const previous = cloudDiffApplications.get(application.id);
+    if (previous === undefined) {
+      cloudDiffApplications.set(application.id, json);
+    } else if (previous !== json) {
+      cloudDiffApplications.set(application.id, json);
+      queueDoc('application', application.id, application);
+    }
+  });
+
+  Array.from(cloudDiffApplications.keys()).forEach((id) => {
+    if (!present.has(id)) {
+      cloudDiffApplications.delete(id);
+      queueDoc('application', id, null, true);
+    }
+  });
+}
+
+function decodeDocPayload(payload) {
+  if (typeof payload !== 'string') return payload;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+}
+
+function applyRemoteDocs(docs) {
+  if (!Array.isArray(docs) || !docs.length) return false;
+
+  const clocks = loadClocks();
+  let changed = false;
+
+  docs.forEach((doc) => {
+    const kind = doc.kind;
+    const docId = doc.doc_id || doc.docId;
+    const clientUpdatedAt = Number(doc.client_updated_at == null ? doc.clientUpdatedAt : doc.client_updated_at);
+    if (!kind || !docId || !Number.isFinite(clientUpdatedAt)) return;
+
+    const key = kind + ':' + docId;
+    if ((Number(clocks[key]) || 0) >= clientUpdatedAt) return; // local edit is newer
+    clocks[key] = clientUpdatedAt;
+
+    const deleted = Boolean(doc.deleted_at || doc.deletedAt);
+    const payload = decodeDocPayload(doc.payload);
+
+    if (kind === 'profile') {
+      state.profile = normalizeProfile(deleted ? null : payload);
+      cloudDiffProfile = JSON.stringify(state.profile);
+    } else if (kind === 'application') {
+      const index = state.applications.findIndex((application) => application.id === docId);
+      if (deleted) {
+        if (index >= 0) state.applications.splice(index, 1);
+        cloudDiffApplications.delete(docId);
+      } else {
+        const normalized = normalizeApplications([payload])[0];
+        if (normalized) {
+          if (normalized.id !== docId) normalized.id = docId;
+          if (index >= 0) state.applications[index] = normalized;
+          else state.applications.push(normalized);
+          cloudDiffApplications.set(docId, JSON.stringify(normalized));
+        }
+      }
+    }
+
+    changed = true;
+  });
+
+  saveClocks(clocks);
+
+  if (changed) {
+    localStorage.setItem(STORE.profile, JSON.stringify(state.profile));
+    localStorage.setItem(STORE.applications, JSON.stringify(state.applications));
+    if (currentDetailId && !state.applications.some((application) => application.id === currentDetailId)) {
+      currentDetailId = null;
+    }
+    refreshCurrentPage();
+  }
+
+  return changed;
+}
+
+async function pullCloudDocs(full = false) {
+  if (!cloudReady()) return;
+  if (cloudPullInFlight) {
+    cloudPullAgain = true;
+    return;
+  }
+
+  cloudPullInFlight = true;
+  try {
+    const since = full ? CLOUD_EPOCH : (readCursor() || CLOUD_EPOCH);
+    const data = await api('/docs?since=' + encodeURIComponent(since));
+    applyRemoteDocs(data && data.docs);
+    if (data && data.cursor) writeCursor(data.cursor);
+    if (state.cloud.status !== 'error') setCloudStatus('synced');
+  } catch (err) {
+    setCloudStatus('error', err.message);
+  } finally {
+    cloudPullInFlight = false;
+    if (cloudPullAgain) {
+      cloudPullAgain = false;
+      pullCloudDocs(false);
+    }
+  }
+}
+
+function stopRealtime() {
+  if (cloudSubscription) {
+    try {
+      cloudSubscription.unsubscribe();
+    } catch {
+      // ignore
+    }
+    cloudSubscription = null;
+  }
+  closeRealtime();
+  state.cloud.realtime = false;
+}
+
+async function startRealtime() {
+  stopRealtime();
+  if (!cloudReady() || !cloudConfig.realtimeUrl) return;
+
+  try {
+    cloudSubscription = await subscribeToDocs(
+      (rows) => {
+        applyRemoteDocs(rows);
+        setCloudStatus('synced');
+      },
+      (rtState) => {
+        if (rtState && rtState.status === 'error') {
+          setCloudStatus('polling', 'Live updates paused — polling every 30s');
+        }
+      }
+    );
+    state.cloud.realtime = Boolean(cloudSubscription);
+  } catch (err) {
+    state.cloud.realtime = false;
+    console.warn('Realtime unavailable; polling instead', err.message);
+  }
+  renderAccount();
+}
+
+function startPolling() {
+  clearInterval(cloudPollTimer);
+  cloudPollTimer = setInterval(() => {
+    if (!cloudReady() || document.hidden) return;
+    flushCloudQueue();
+    pullCloudDocs(false);
+  }, CLOUD_POLL_MS);
+}
+
+function stopCloudSync() {
+  stopRealtime();
+  clearInterval(cloudPollTimer);
+  clearTimeout(cloudFlushTimer);
+  cloudPollTimer = null;
+  cloudFlushTimer = null;
+  cloudQueue.clear();
+  cloudDiffProfile = null;
+  cloudDiffApplications.clear();
+  state.cloud = { user: null, status: 'off', lastSync: null, error: '', realtime: false };
+}
+
+async function startCloudSync(session) {
+  const user = session && (session.user || (session.session && session.session.user));
+  if (!user) {
+    stopCloudSync();
+    return;
+  }
+
+  state.cloud.user = user;
+  state.cloud.status = 'syncing';
+  state.cloud.error = '';
+  renderAccount();
+
+  const hadCursor = Boolean(readCursor());
+  const since = hadCursor ? readCursor() : CLOUD_EPOCH;
+  const data = await api('/docs?since=' + encodeURIComponent(since));
+  applyRemoteDocs(data && data.docs);
+  if (data && data.cursor) writeCursor(data.cursor);
+
+  if (!hadCursor) {
+    const seen = new Set(
+      ((data && data.docs) || []).map((doc) => doc.kind + ':' + (doc.doc_id || doc.docId))
+    );
+    if (state.profile.resumeText || state.profile.name || state.profile.email) {
+      if (!seen.has('profile:me')) queueDoc('profile', 'me', state.profile);
+    }
+    state.applications.forEach((application) => {
+      if (!seen.has('application:' + application.id)) {
+        queueDoc('application', application.id, application);
+      }
+    });
+  }
+
+  cloudDiffProfile = JSON.stringify(state.profile);
+  cloudDiffApplications = new Map(
+    state.applications.map((application) => [application.id, JSON.stringify(application)])
+  );
+
+  await flushCloudQueue();
+  await startRealtime();
+  startPolling();
+  setCloudStatus('synced');
+}
+
+async function restoreCloudSession() {
+  if (!cloudConfig.configured) {
+    renderSettings();
+    return;
+  }
+
+  const session = await getCloudSession();
+  if (session && session.user) {
+    try {
+      await startCloudSync(session);
+    } catch (err) {
+      state.cloud.user = session.user;
+      setCloudStatus('error', err.message);
+    }
+  }
+  renderSettings();
+}
+
+function setCloudStatus(status, detail = '') {
+  state.cloud.status = status;
+  state.cloud.error = detail || '';
+  if (status === 'synced') state.cloud.lastSync = new Date().toISOString();
+  renderAccount();
+}
+
+function setAccountError(message) {
+  const el = $('#accountError');
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+
+function setAccountBusy(busy) {
+  ['#accountSignInBtn', '#accountSignUpBtn', '#accountSyncBtn', '#accountSignOutBtn'].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = busy;
+  });
+}
+
+async function handleCloudSignIn() {
+  const email = ($('#accountEmail') ? $('#accountEmail').value : '').trim();
+  const password = $('#accountPassword') ? $('#accountPassword').value : '';
+  if (!email || !password) {
+    setAccountError('Enter your email and password.');
+    return;
+  }
+
+  setAccountError('');
+  setAccountBusy(true);
+  try {
+    const data = await signInCloud({ email, password });
+    const session = data && data.user
+      ? { user: data.user, session: data.session }
+      : await getCloudSession();
+    if (!session || !session.user) throw new Error('Sign-in did not return a session.');
+    await startCloudSync(session);
+    renderSettings();
+    toast('Signed in — syncing this device');
+  } catch (err) {
+    if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
+    else setAccountError(err.message || 'Could not sign in.');
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+async function handleCloudSignUp() {
+  const email = ($('#accountEmail') ? $('#accountEmail').value : '').trim();
+  const password = $('#accountPassword') ? $('#accountPassword').value : '';
+  const name = ($('#accountName') ? $('#accountName').value : '').trim();
+
+  if (!email || !password) {
+    setAccountError('Enter an email and a password of at least 8 characters.');
+    return;
+  }
+  if (password.length < 8) {
+    setAccountError('Password must be at least 8 characters.');
+    return;
+  }
+
+  setAccountError('');
+  setAccountBusy(true);
+  try {
+    const data = await signUpCloud({ email, password, name: name || email.split('@')[0] });
+    const session = data && data.user
+      ? { user: data.user, session: data.session }
+      : await getCloudSession();
+    if (session && session.user) {
+      await startCloudSync(session);
+      toast('Account created — syncing this device');
+    } else {
+      setAccountError('Account created. Check your email to verify it, then sign in.');
+    }
+    renderSettings();
+  } catch (err) {
+    if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
+    else setAccountError(err.message || 'Could not create account.');
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+async function handleCloudSignOut() {
+  if (!confirm('Sign out of cloud sync? Your local data stays on this device.')) return;
+  setAccountBusy(true);
+  try {
+    await signOutCloud();
+  } catch (err) {
+    console.warn('Sign out failed', err.message);
+  }
+  stopCloudSync();
+  setAccountError('');
+  renderSettings();
+  toast('Signed out of cloud sync');
+}
+
+async function handleCloudSyncNow() {
+  if (!cloudReady()) return;
+  setAccountBusy(true);
+  try {
+    await flushCloudQueue();
+    await pullCloudDocs(false);
+    toast('Workspace synced');
+  } catch (err) {
+    setAccountError(err.message);
+  } finally {
+    setAccountBusy(false);
+  }
 }
 
 // ---------------------------------------------------------------- Helpers
@@ -226,6 +702,108 @@ function initials(name) {
   if (!parts.length) return 'k';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// ---------------------------------------------------------------- Profile photo
+
+function isProfilePhoto(value) {
+  return typeof value === 'string' && PROFILE_PHOTO_PATTERN.test(value);
+}
+
+function profilePhoto() {
+  const photo = state.profile && state.profile.photo;
+  return isProfilePhoto(photo) ? photo : '';
+}
+
+function renderAvatar(el, photo, name) {
+  if (!el) return;
+  if (photo) {
+    el.classList.add('has-photo');
+    el.innerHTML = '<img src="' + photo + '" alt="">';
+  } else {
+    el.classList.remove('has-photo');
+    el.textContent = initials(name);
+  }
+}
+
+function renderProfilePhoto() {
+  const photo = profilePhoto();
+  const name = state.profile.name;
+  renderAvatar($('#dashAvatar'), photo, name);
+  renderAvatar($('#avatarBtn'), photo, name);
+  renderAvatar($('#profilePhotoPreview'), photo, name);
+  const removeBtn = $('#profilePhotoRemove');
+  if (removeBtn) removeBtn.disabled = !photo;
+}
+
+function readProfileImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('That image could not be read. Try a PNG, JPEG, or WebP.'));
+    };
+    img.src = url;
+  });
+}
+
+async function handleProfilePhotoFile(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type)) {
+    toast('Choose an image file: PNG, JPEG, WebP, or GIF.', 'error');
+    return;
+  }
+  if (file.size > 12 * 1024 * 1024) {
+    toast('That image is over 12 MB. Pick a smaller one.', 'error');
+    return;
+  }
+
+  try {
+    const img = await readProfileImage(file);
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    if (!width || !height) throw new Error('That image has no readable pixels.');
+
+    const edge = Math.min(width, height);
+    const canvas = document.createElement('canvas');
+    canvas.width = PROFILE_PHOTO_PX;
+    canvas.height = PROFILE_PHOTO_PX;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#0f1514';
+    ctx.fillRect(0, 0, PROFILE_PHOTO_PX, PROFILE_PHOTO_PX);
+    ctx.drawImage(
+      img,
+      (width - edge) / 2,
+      (height - edge) / 2,
+      edge,
+      edge,
+      0,
+      0,
+      PROFILE_PHOTO_PX,
+      PROFILE_PHOTO_PX
+    );
+
+    state.profile.photo = canvas.toDataURL('image/jpeg', 0.86);
+    saveProfile();
+    renderProfilePhoto();
+    toast('Profile photo updated');
+  } catch (err) {
+    toast(err.message || 'Could not process that image', 'error');
+  }
+}
+
+function clearProfilePhoto() {
+  if (!profilePhoto()) return;
+  state.profile.photo = '';
+  saveProfile();
+  renderProfilePhoto();
+  toast('Profile photo removed');
 }
 
 function firstName(name) {
@@ -369,6 +947,7 @@ const calendarState = {
 
 const PAGE_TITLES = {
   dashboard: 'Dashboard',
+  search: 'Find jobs',
   tracker: 'Applications',
   calendar: 'Calendar',
   application: 'Application',
@@ -403,11 +982,30 @@ function showPage(page) {
   }
 
   if (target === 'dashboard') renderDashboard();
+  if (target === 'search') renderJobSearch();
   if (target === 'tracker') renderTracker();
   if (target === 'calendar') renderCalendar();
   if (target === 'application') renderApplication();
+  if (target === 'profile') {
+    applyProfileToForm();
+    renderProfileResumeMeta();
+  }
   if (target === 'settings') renderSettings();
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function refreshCurrentPage() {
+  if (currentPage === 'dashboard') renderDashboard();
+  else if (currentPage === 'tracker') renderTracker();
+  else if (currentPage === 'calendar') renderCalendar();
+  else if (currentPage === 'settings') renderSettings();
+  else if (currentPage === 'application') {
+    if (currentDetailId) renderApplication();
+    else showPage('tracker');
+  } else if (currentPage === 'profile') {
+    applyProfileToForm();
+    renderProfileResumeMeta();
+  }
 }
 
 // ---------------------------------------------------------------- Dashboard
@@ -433,8 +1031,6 @@ function renderDashboard() {
       : 'Start with your profile. Add a resume once, then every job you add gets a tailored version.';
   }
 
-  const avatar = $('#dashAvatar');
-  if (avatar) avatar.textContent = initials(profile.name);
   const nameEl = $('#dashName');
   if (nameEl) nameEl.textContent = profile.name || 'Add your name';
   const headlineEl = $('#dashHeadline');
@@ -442,8 +1038,7 @@ function renderDashboard() {
     headlineEl.textContent = profile.headline || 'Your headline appears on every tailored resume.';
   }
 
-  const topAvatar = $('#avatarBtn');
-  if (topAvatar) topAvatar.textContent = initials(profile.name);
+  renderProfilePhoto();
 
   renderChips(profile);
   renderStats(applications);
@@ -773,6 +1368,275 @@ function hostnameOf(url) {
   }
 }
 
+// ---------------------------------------------------------------- Job search
+
+const SEARCH_EXAMPLES = [
+  'Frontend developer',
+  'Product manager',
+  'Data analyst',
+  'Customer support',
+  'Designer'
+];
+
+const jobSearch = {
+  query: '',
+  target: DEFAULT_TARGET,
+  strict: true,
+  status: 'idle', // idle | loading | done | error
+  jobs: [],
+  providers: [],
+  error: '',
+  fetchedAt: null
+};
+
+function renderJobSearch() {
+  const roleInput = $('#jobSearchRole');
+  if (roleInput && jobSearch.query && !roleInput.value) roleInput.value = jobSearch.query;
+
+  const targetInput = $('#jobSearchLocation');
+  if (targetInput && !targetInput.value) targetInput.value = jobSearch.target;
+
+  const strict = $('#jobSearchStrict');
+  if (strict) strict.checked = jobSearch.strict;
+
+  updateSearchTargetLabel();
+  renderSearchProviders();
+  renderSearchResults();
+}
+
+function updateSearchTargetLabel() {
+  const info = resolveTarget(jobSearch.target || DEFAULT_TARGET);
+  const label = $('#jobSearchTargetLabel');
+  if (label) label.textContent = info.label;
+}
+
+function renderSearchProviders() {
+  const host = $('#jobSearchProviders');
+  if (!host) return;
+
+  const providers = jobSearch.providers.length
+    ? jobSearch.providers
+    : PROVIDER_LINKS.map((provider) => ({ ...provider, status: 'idle', count: 0 }));
+
+  host.innerHTML = providers.map((provider) => {
+    const status = provider.status || 'idle';
+    let count = 'not searched';
+    if (status === 'ok') count = provider.count + (provider.count === 1 ? ' role' : ' roles');
+    else if (status === 'empty') count = 'no matches';
+    else if (status === 'error') count = 'unavailable';
+    else if (jobSearch.status === 'loading') count = 'searching…';
+
+    const title = status === 'error' && provider.error ? provider.error : provider.name;
+    return '<a class="provider-chip ' + status + '" href="' + escapeHtml(provider.home) + '" ' +
+      'target="_blank" rel="noopener" title="' + escapeHtml(title) + '">' +
+      '<span class="provider-dot" aria-hidden="true"></span>' +
+      escapeHtml(provider.name) +
+      '<span class="provider-count">' + escapeHtml(count) + '</span>' +
+      '</a>';
+  }).join('');
+}
+
+function postedLabel(value) {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return '';
+  const days = Math.floor((Date.now() - time) / DAY_MS);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 30) return days + 'd ago';
+  return formatDate(value);
+}
+
+function decoratedSearchJobs() {
+  const target = jobSearch.target || DEFAULT_TARGET;
+  const jobs = jobSearch.jobs.map((job) => ({
+    ...job,
+    eligibility: classifyEligibility(job.location, target)
+  }));
+  return sortJobs(jobs);
+}
+
+function jobResultHtml(job) {
+  const eligibility = job.eligibility || classifyEligibility(job.location, jobSearch.target);
+  const eligibilityClass = eligibility.eligible
+    ? (eligibility.eligibility === 'region' ? 'region' : 'open')
+    : 'closed';
+  const rawLocation = job.location || 'not stated';
+  const posted = postedLabel(job.postedAt);
+
+  const meta = [
+    job.company ? '<span>' + escapeHtml(job.company) + '</span>' : '',
+    '<span class="job-elig ' + eligibilityClass + '" title="Stated location: ' +
+      escapeHtml(rawLocation) + '">' + escapeHtml(eligibility.label) + '</span>',
+    job.type ? '<span>' + escapeHtml(job.type) + '</span>' : '',
+    job.level ? '<span>' + escapeHtml(job.level) + '</span>' : '',
+    job.salary ? '<span class="job-salary">' + escapeHtml(job.salary) + '</span>' : '',
+    posted ? '<span>' + escapeHtml(posted) + '</span>' : ''
+  ].filter(Boolean).join('<span class="sep" aria-hidden="true">·</span>');
+
+  return '<article class="job-result">' +
+    '<div class="job-main">' +
+    '<div class="job-title-row">' +
+    '<a class="job-title" href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer follow">' +
+    escapeHtml(job.title) + '</a>' +
+    '<a class="job-provider" href="' + escapeHtml(job.providerHome || '#') + '" target="_blank" rel="noopener">' +
+    escapeHtml(job.provider) + '</a>' +
+    '</div>' +
+    '<div class="job-meta">' + meta + '</div>' +
+    '</div>' +
+    '<div class="job-actions">' +
+    '<a class="btn ghost small" href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer follow">Open ↗</a>' +
+    '<button class="btn subtle small" type="button" data-track-job="' + escapeHtml(job.id) + '">Track</button>' +
+    '</div>' +
+    '</article>';
+}
+
+function searchExamplesHtml() {
+  return '<div class="search-examples">' +
+    SEARCH_EXAMPLES.map((role) =>
+      '<button class="search-example" type="button" data-search-role="' + escapeHtml(role) + '">' +
+      escapeHtml(role) + '</button>'
+    ).join('') +
+    '</div>';
+}
+
+function renderSearchResults() {
+  const host = $('#jobSearchResults');
+  if (!host) return;
+
+  const count = $('#jobSearchCount');
+  const info = resolveTarget(jobSearch.target || DEFAULT_TARGET);
+
+  if (jobSearch.status === 'idle') {
+    if (count) count.textContent = 'No search yet';
+    host.innerHTML = '<div class="search-intro">' +
+      '<h3>Find a remote role that can hire you.</h3>' +
+      '<p>Type a job title. knomad searches the providers by role, then keeps postings that say "Worldwide", "Africa", "Nigeria", or otherwise include your location. Everything is rule-based — no AI, no API key.</p>' +
+      searchExamplesHtml() +
+      '</div>';
+    return;
+  }
+
+  if (jobSearch.status === 'loading') {
+    if (count) count.textContent = 'Searching three providers…';
+    host.innerHTML = '<div class="job-skeleton"></div><div class="job-skeleton"></div><div class="job-skeleton"></div>';
+    return;
+  }
+
+  if (jobSearch.status === 'error') {
+    if (count) count.textContent = 'Providers unavailable';
+    host.innerHTML = '<div class="search-error">' +
+      '<h3>Could not reach the job providers.</h3>' +
+      '<p>' + escapeHtml(jobSearch.error || 'Check your connection and try again.') + '</p>' +
+      '<button class="btn ghost small" type="button" data-retry-search>Try again</button>' +
+      '</div>';
+    return;
+  }
+
+  const all = decoratedSearchJobs();
+  const eligible = all.filter((job) => job.eligibility.eligible);
+  const visible = jobSearch.strict ? eligible : all;
+
+  if (count) {
+    if (jobSearch.strict) {
+      count.textContent = eligible.length + ' open to ' + info.label + ' · ' + all.length + ' matched';
+    } else {
+      count.textContent = 'Showing all ' + all.length + ' matched · ' + eligible.length + ' open to ' + info.label;
+    }
+  }
+
+  if (!visible.length) {
+    if (all.length && jobSearch.strict) {
+      host.innerHTML = '<div class="search-intro">' +
+        '<h3>No verified matches for ' + escapeHtml(info.label) + ' this time.</h3>' +
+        '<p>' + all.length + ' role' + (all.length === 1 ? '' : 's') +
+        ' matched "' + escapeHtml(jobSearch.query) + '", but each one lists a different region. ' +
+        'Review them with the filter off and check each posting before you apply.</p>' +
+        '<button class="btn ghost small" type="button" data-show-all-search>Show all ' + all.length + ' matched roles</button>' +
+        searchExamplesHtml() +
+        '</div>';
+    } else {
+      host.innerHTML = '<div class="search-intro">' +
+        '<h3>Nothing matched "' + escapeHtml(jobSearch.query) + '".</h3>' +
+        '<p>Try a shorter or more common title — "developer" instead of "senior React developer", or "support" instead of "customer experience associate". The providers refresh continuously.</p>' +
+        searchExamplesHtml() +
+        '</div>';
+    }
+    return;
+  }
+
+  const shown = visible.slice(0, 60);
+  host.innerHTML = shown.map(jobResultHtml).join('') +
+    (visible.length > shown.length
+      ? '<p class="search-foot">Showing the first ' + shown.length + ' of ' + visible.length + '. Narrow the role to see fewer, better matches.</p>'
+      : '');
+}
+
+async function handleJobSearchSubmit(event) {
+  if (event) event.preventDefault();
+
+  const roleInput = $('#jobSearchRole');
+  const targetInput = $('#jobSearchLocation');
+  const role = roleInput ? roleInput.value.trim() : '';
+  if (!role) {
+    toast('Type a role to search for', 'error');
+    if (roleInput) roleInput.focus();
+    return;
+  }
+
+  jobSearch.query = role;
+  jobSearch.target = (targetInput && targetInput.value.trim()) || DEFAULT_TARGET;
+  jobSearch.status = 'loading';
+  jobSearch.error = '';
+  updateSearchTargetLabel();
+  renderSearchProviders();
+  renderSearchResults();
+
+  const button = $('#jobSearchBtn');
+  const label = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Searching…';
+  }
+
+  try {
+    const result = await searchJobs(role, { target: jobSearch.target });
+    jobSearch.jobs = Array.isArray(result.jobs) ? result.jobs : [];
+    jobSearch.providers = Array.isArray(result.providers) ? result.providers : [];
+    jobSearch.fetchedAt = result.fetchedAt || null;
+
+    const failed = jobSearch.providers.filter((provider) => provider.status === 'error');
+    if (failed.length === jobSearch.providers.length && jobSearch.providers.length) {
+      jobSearch.status = 'error';
+      jobSearch.error = failed
+        .map((provider) => provider.name + ' (' + provider.error + ')')
+        .join(', ');
+    } else {
+      jobSearch.status = 'done';
+    }
+  } catch (err) {
+    jobSearch.status = 'error';
+    jobSearch.error = err && err.message ? err.message : 'The search failed.';
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = label || 'Search jobs';
+    }
+    renderSearchProviders();
+    renderSearchResults();
+  }
+}
+
+function trackSearchJob(id) {
+  const job = jobSearch.jobs.find((entry) => String(entry.id) === String(id));
+  if (!job) return;
+  openAddJob({
+    url: job.url,
+    company: job.company,
+    position: job.title,
+    description: job.description || ''
+  });
+}
+
 // ---------------------------------------------------------------- Calendar
 
 function eventRowHtml(app, event, options = {}) {
@@ -1022,6 +1886,7 @@ function applyProfileToForm() {
   set('profileSkills', (profile.skills || []).join(', '));
   set('profileResumeText', profile.resumeText);
   renderProfileResumeMeta();
+  renderProfilePhoto();
 }
 
 function renderProfileResumeMeta() {
@@ -1083,6 +1948,17 @@ async function handleResumeFile(file) {
         ? 'Resume loaded from ' + file.name + ' — filled ' + changed.join(', ')
         : 'Resume loaded from ' + file.name + '. No profile details detected; fill them in manually.'
     );
+
+    if (cloudReady()) {
+      uploadResumeFile(file)
+        .then((uploaded) => {
+          if (!uploaded || !uploaded.key) return;
+          state.profile.resumeFileKey = uploaded.key;
+          saveProfile();
+          toast('Original resume archived to Neon Object Storage');
+        })
+        .catch((err) => console.warn('Resume archive failed', err.message));
+    }
   } catch (err) {
     toast(err.message || 'Could not read that file', 'error');
   }
@@ -1579,8 +2455,9 @@ function closeTopModal() {
 // ---------------------------------------------------------------- Add job
 
 let currentDetailId = null;
+let addJobPrefill = null;
 
-function openAddJob() {
+function openAddJob(prefill) {
   if (!state.profile.resumeText) {
     toast('Add your resume first, then knomad can tailor it.', 'error');
     showPage('profile');
@@ -1589,10 +2466,30 @@ function openAddJob() {
     return;
   }
   resetAddJob();
+
+  const seed = prefill && typeof prefill === 'object' && prefill.url ? prefill : null;
+  if (seed) {
+    addJobPrefill = {
+      url: seed.url || '',
+      company: seed.company || '',
+      position: seed.position || '',
+      description: seed.description || ''
+    };
+    const urlInput = $('#jobUrl');
+    if (urlInput) urlInput.value = addJobPrefill.url;
+    const pasteInput = $('#jobPaste');
+    if (pasteInput && addJobPrefill.description) {
+      pasteInput.value = addJobPrefill.description;
+      const details = pasteInput.closest('details');
+      if (details) details.open = true;
+    }
+  }
+
   openModal($('#addJobModal'));
 }
 
 function resetAddJob() {
+  addJobPrefill = null;
   verifySession = null;
   questionsResolver = null;
   const form = $('#addJobForm');
@@ -1687,6 +2584,12 @@ async function handleAddJobSubmit(event) {
 
     job = extractJobInfo(page, rawUrl);
 
+    if (addJobPrefill && pasted && addJobPrefill.description && pasted === addJobPrefill.description) {
+      job.company = addJobPrefill.company || job.company;
+      job.position = addJobPrefill.position || job.position;
+      job.description = addJobPrefill.description;
+    }
+
     // Ask the user a few grounded questions before generating.
     setStep('questions', 'running');
     const questions = buildQuestions(state.profile, job);
@@ -1714,7 +2617,7 @@ async function handleAddJobSubmit(event) {
       description: job.description,
       url: rawUrl
     }, clarifications);
-    setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : 'basic mode');
+    setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : pack.source === 'ai-gateway' ? 'Neon AI Gateway' : 'basic mode');
 
     // Verify before filing.
     setStep('verify', 'running');
@@ -1828,7 +2731,7 @@ async function regenerateFromVerify() {
       description: session.job.description,
       url: session.rawUrl
     }, clarifications);
-    setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : 'basic mode');
+    setStep('tailor', 'done', pack.source === 'ai' ? 'Gemini' : pack.source === 'ai-gateway' ? 'Neon AI Gateway' : 'basic mode');
 
     setStep('verify', 'running');
     const flagged = (pack.resume || '').trim()
@@ -1890,10 +2793,12 @@ async function saveApplication(pack, job, rawUrl, clarifications) {
 
   if (pack.source === 'ai') {
     toast('Application tailored and filed');
+  } else if (pack.source === 'ai-gateway') {
+    toast('Application tailored with Neon AI Gateway and filed');
   } else if (pack.aiError) {
-    toast('Gemini failed, so knomad saved a basic draft. Check your key in Settings.', 'error');
+    toast('AI tailoring failed, so knomad saved a basic draft. Check Settings.', 'error');
   } else {
-    toast('Saved in basic mode. Add a Gemini key for full rewrites.');
+    toast('Saved in basic mode. Add a Gemini key or sign in for full rewrites.');
   }
 }
 
@@ -2285,16 +3190,26 @@ function companyFromDomain(url) {
 
 async function buildJobPack(job, clarifications) {
   const key = state.geminiKey.trim();
-  if (!key) {
-    return { ...fallbackPack(job), source: 'basic' };
+  const attempts = [];
+
+  if (key) {
+    attempts.push(['ai', () => generateWithGemini(job, key, clarifications)]);
   }
-  try {
-    const pack = await generateWithGemini(job, key, clarifications);
-    return { ...pack, source: 'ai' };
-  } catch (err) {
-    console.warn('Gemini request failed', err);
-    return { ...fallbackPack(job), source: 'basic', aiError: err.message };
+  if (cloudReady()) {
+    attempts.push(['ai-gateway', () => generateWithGateway(job, clarifications)]);
   }
+
+  let lastError = null;
+  for (const [source, run] of attempts) {
+    try {
+      return { ...(await run()), source };
+    } catch (err) {
+      console.warn(source + ' request failed', err);
+      lastError = err;
+    }
+  }
+
+  return { ...fallbackPack(job), source: 'basic', aiError: lastError ? lastError.message : '' };
 }
 
 function profileHeader(profile) {
@@ -2391,10 +3306,20 @@ function buildPrompt(job, clarifications) {
 async function generateWithGemini(job, key, clarifications) {
   const prompt = buildPrompt(job, clarifications);
   const text = await geminiRequest(prompt, key);
+  return parseJobPack(text, job);
+}
+
+async function generateWithGateway(job, clarifications) {
+  const prompt = buildPrompt(job, clarifications);
+  const text = await aiChat(prompt);
+  return parseJobPack(text, job);
+}
+
+function parseJobPack(text, job) {
   const parsed = parseJsonBlock(text);
 
   if (!parsed || (!parsed.resume && !parsed.interviewPrep)) {
-    throw new Error('Gemini returned an empty result');
+    throw new Error('The model returned an empty result');
   }
 
   return {
@@ -3829,6 +4754,62 @@ function renderNotifyStatus() {
 
 // ---------------------------------------------------------------- Settings
 
+function cloudStatusText() {
+  if (!cloudConfig.configured) return 'Cloud sync is not configured in this build';
+  if (!state.cloud.user) return 'Signed out';
+  if (state.cloud.status === 'syncing') return 'Syncing…';
+  if (state.cloud.status === 'error') return state.cloud.error || 'Sync error';
+  if (state.cloud.status === 'polling') return state.cloud.error || 'Live updates paused — polling every 30s';
+  if (state.cloud.status === 'synced') {
+    const when = state.cloud.lastSync
+      ? new Date(state.cloud.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '';
+    return 'Synced' + (when ? ' · ' + when : '') + (state.cloud.realtime ? ' · live' : '');
+  }
+  return 'Not synced yet';
+}
+
+function renderAccount() {
+  const card = $('#accountCard');
+  if (!card) return;
+
+  const badge = $('#accountBadge');
+  const signedOut = $('#accountSignedOut');
+  const signedIn = $('#accountSignedIn');
+  const intro = $('#accountIntro');
+  const emailLabel = $('#accountEmailLabel');
+  const statusLine = $('#syncStatus');
+  const statusText = $('#syncStatusText');
+
+  const configured = cloudConfig.configured;
+  const signedInNow = Boolean(state.cloud.user);
+  const status = state.cloud.status;
+  const ok = status === 'synced';
+
+  if (badge) {
+    badge.textContent = !configured ? 'Not configured' : signedInNow ? 'On' : 'Off';
+    badge.classList.toggle('on', ok);
+  }
+
+  if (intro) {
+    intro.textContent = configured
+      ? 'Sign in to sync your profile, applications, and archive originals across devices. Your Gemini key never leaves this device.'
+      : 'This build has no Neon Auth or sync Function URL. Set VITE_NEON_AUTH_URL and VITE_NEON_SYNC_URL, then rebuild.';
+  }
+
+  if (signedOut) signedOut.hidden = !configured || signedInNow;
+  if (signedIn) signedIn.hidden = !signedInNow;
+
+  if (emailLabel) {
+    emailLabel.textContent = signedInNow
+      ? (state.cloud.user.email || state.cloud.user.name || 'Signed in')
+      : '';
+  }
+
+  if (statusLine) statusLine.classList.toggle('on', ok);
+  if (statusText) statusText.textContent = cloudStatusText();
+}
+
 function renderSettings() {
   const keyInput = $('#keyInput');
   if (keyInput) keyInput.value = state.geminiKey;
@@ -3850,6 +4831,7 @@ function renderSettings() {
   }
 
   renderNotifyStatus();
+  renderAccount();
 }
 
 function saveKey() {
@@ -3897,8 +4879,13 @@ function exportData() {
 }
 
 function resetAll() {
-  if (!confirm('Erase your profile, resume, applications, and key from this browser?')) return;
+  const cloudMessage = cloudReady()
+    ? 'Erase your profile, resume, applications, and key from this browser and your cloud account?'
+    : 'Erase your profile, resume, applications, and key from this browser?';
+  if (!confirm(cloudMessage)) return;
   if (!confirm('Last check: this cannot be undone. Erase everything?')) return;
+
+  const previousApplications = state.applications.slice();
 
   localStorage.removeItem(STORE.profile);
   localStorage.removeItem(STORE.applications);
@@ -3916,27 +4903,67 @@ function resetAll() {
   clearTimeout(practiceSaveTimer);
   workingModel = null;
 
+  if (cloudReady()) {
+    previousApplications.forEach((application) => queueDoc('application', application.id, null, true));
+    queueDoc('profile', 'me', state.profile);
+    cloudDiffProfile = JSON.stringify(state.profile);
+    cloudDiffApplications.clear();
+    flushCloudQueue();
+  }
+
   applyProfileToForm();
   showPage('dashboard');
-  toast('All local data erased');
+  toast(cloudReady() ? 'All local and cloud data erased' : 'All local data erased');
 }
 
 // ---------------------------------------------------------------- Events
 
 function bindEvents() {
-  const rail = $('#railNav');
-  if (rail) {
-    rail.addEventListener('click', (event) => {
-      const button = event.target.closest('.rail-btn');
-      if (button && button.dataset.page) showPage(button.dataset.page);
-    });
-  }
-
   document.addEventListener('click', (event) => {
+    const railButton = event.target.closest('.rail-btn');
+    if (railButton && railButton.dataset.page) {
+      event.preventDefault();
+      showPage(railButton.dataset.page);
+      return;
+    }
+
     const addJob = event.target.closest('[data-action="add-job"]');
     if (addJob) {
       event.preventDefault();
       openAddJob();
+      return;
+    }
+
+    const trackJob = event.target.closest('[data-track-job]');
+    if (trackJob) {
+      event.preventDefault();
+      trackSearchJob(trackJob.dataset.trackJob);
+      return;
+    }
+
+    const searchExample = event.target.closest('[data-search-role]');
+    if (searchExample) {
+      event.preventDefault();
+      const input = $('#jobSearchRole');
+      if (input) input.value = searchExample.dataset.searchRole;
+      handleJobSearchSubmit();
+      return;
+    }
+
+    const retrySearch = event.target.closest('[data-retry-search]');
+    if (retrySearch) {
+      event.preventDefault();
+      handleJobSearchSubmit();
+      return;
+    }
+
+    const showAllSearch = event.target.closest('[data-show-all-search]');
+    if (showAllSearch) {
+      event.preventDefault();
+      jobSearch.strict = false;
+      const strict = $('#jobSearchStrict');
+      if (strict) strict.checked = false;
+      renderSearchResults();
       return;
     }
 
@@ -4009,7 +5036,19 @@ function bindEvents() {
   const profileForm = $('#profileForm');
   if (profileForm) profileForm.addEventListener('submit', handleProfileSubmit);
 
-  const resumeText = $('#profileResumeText');
+  const photoBtn = $('#profilePhotoBtn');
+  const photoInput = $('#profilePhotoFile');
+  if (photoBtn && photoInput) {
+    photoBtn.addEventListener('click', () => photoInput.click());
+    photoInput.addEventListener('change', (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (file) handleProfilePhotoFile(file);
+      photoInput.value = '';
+    });
+  }
+
+  const photoRemove = $('#profilePhotoRemove');
+  if (photoRemove) photoRemove.addEventListener('click', clearProfilePhoto);const resumeText = $('#profileResumeText');
   if (resumeText) {
     resumeText.addEventListener('input', renderProfileResumeMeta);
   }
@@ -4059,6 +5098,26 @@ function bindEvents() {
   if (search) search.addEventListener('input', renderTracker);
   const filter = $('#statusFilter');
   if (filter) filter.addEventListener('change', renderTracker);
+
+  const jobSearchForm = $('#jobSearchForm');
+  if (jobSearchForm) jobSearchForm.addEventListener('submit', handleJobSearchSubmit);
+
+  const jobSearchStrict = $('#jobSearchStrict');
+  if (jobSearchStrict) {
+    jobSearchStrict.addEventListener('change', () => {
+      jobSearch.strict = jobSearchStrict.checked;
+      renderSearchResults();
+    });
+  }
+
+  const jobSearchLocation = $('#jobSearchLocation');
+  if (jobSearchLocation) {
+    jobSearchLocation.addEventListener('input', () => {
+      jobSearch.target = jobSearchLocation.value.trim() || DEFAULT_TARGET;
+      updateSearchTargetLabel();
+      if (jobSearch.status === 'done') renderSearchResults();
+    });
+  }
 
   const addForm = $('#addJobForm');
   if (addForm) addForm.addEventListener('submit', handleAddJobSubmit);
@@ -4153,6 +5212,25 @@ function bindEvents() {
   const exportBtn = $('#exportBtn');
   if (exportBtn) exportBtn.addEventListener('click', exportData);
 
+  const signInBtn = $('#accountSignInBtn');
+  if (signInBtn) signInBtn.addEventListener('click', handleCloudSignIn);
+
+  const signUpBtn = $('#accountSignUpBtn');
+  if (signUpBtn) signUpBtn.addEventListener('click', handleCloudSignUp);
+
+  const signOutBtn = $('#accountSignOutBtn');
+  if (signOutBtn) signOutBtn.addEventListener('click', handleCloudSignOut);
+
+  const syncNowBtn = $('#accountSyncBtn');
+  if (syncNowBtn) syncNowBtn.addEventListener('click', handleCloudSyncNow);
+
+  const accountPassword = $('#accountPassword');
+  if (accountPassword) {
+    accountPassword.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') handleCloudSignIn();
+    });
+  }
+
   const resetBtn = $('#resetBtn');
   if (resetBtn) resetBtn.addEventListener('click', resetAll);
 }
@@ -4164,6 +5242,23 @@ function init() {
   bindEvents();
   showPage('dashboard');
   startReminders();
+
+  window.__knomadReady = true;
+  const bootError = document.getElementById('appBootError');
+  if (bootError) bootError.hidden = true;
+
+  restoreCloudSession();
+
+  window.addEventListener('online', () => {
+    if (cloudReady()) {
+      flushCloudQueue();
+      pullCloudDocs(false);
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && cloudReady()) pullCloudDocs(false);
+  });
 }
 
 if (document.readyState === 'loading') {
