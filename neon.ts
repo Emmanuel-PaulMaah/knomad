@@ -10,7 +10,7 @@ export default defineConfig({
   // Live SQL over the branch, used to trigger sync pulls across devices.
   preview: {
     realtime: {
-      allowedOrigins: ["http://localhost:8000", "http://127.0.0.1:8000"],
+      allowedOrigins: ["http://localhost:8000", "http://127.0.0.1:8000", "https://knomad.netlify.app"],
     },
   },
 
