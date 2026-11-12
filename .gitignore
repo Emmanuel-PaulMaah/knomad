@@ -1,1 +1,12 @@
 node_modules/
+dist/
+.neon
+
+# Neon env pull (secrets: database, auth, S3, gateway, realtime)
+.env
+.env.local
+.env.*.local
+
+# Playwright
+test-results/
+playwright-report/
