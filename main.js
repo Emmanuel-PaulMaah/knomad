@@ -22,6 +22,10 @@ import {
   sortJobs
 } from './job-search.js';
 
+// The PDF reader's worker ships with the app. It used to be a CDN script with
+// no integrity check, which put the Gemini key in this origin at that CDN's mercy.
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
+
 // ---------------------------------------------------------------- Storage
 
 const STORE = {
@@ -49,8 +53,6 @@ const REMINDER_LABELS = {
 };
 
 const NOTIFIED_KEY = 'knomad_notified';
-
-const PDF_LIB_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
 
 const PRACTICE_FILLERS = [
   'um', 'uh', 'like', 'just', 'really', 'basically', 'actually',
@@ -308,8 +310,36 @@ async function flushCloudQueue() {
   cloudQueue = new Map();
 
   try {
-    await api('/docs/batch', { method: 'POST', body: { docs } });
-    setCloudStatus('synced');
+    const data = await api('/docs/batch', { method: 'POST', body: { docs } });
+    const results = Array.isArray(data && data.results) ? data.results : [];
+    const rejected = results.filter((result) => result && (result.error || result.applied === false));
+
+    if (!rejected.length) {
+      setCloudStatus('synced');
+      return;
+    }
+
+    // The server dropped these writes. Saying "synced" here would be a lie:
+    // pull the winning rows instead, and name the problem when it is the clock.
+    rejected.forEach((result) => {
+      if (result.kind && result.docId) resetClock(result.kind, result.docId);
+    });
+
+    const clockRejection = rejected.find((result) => /clock/i.test(result.error || ''));
+    if (clockRejection) {
+      setCloudStatus('error', clockRejection.error);
+      notifySyncProblem(clockRejection.error + ' Your other changes are still on this device.');
+      return;
+    }
+
+    notifySyncProblem(
+      rejected.length +
+      (rejected.length === 1 ? ' change was' : ' changes were') +
+      ' not saved because another device has newer edits. Pulling the latest.'
+    );
+    // A full pull, because the winning row may already be behind this device's
+    // cursor (Realtime applies rows without moving it).
+    await pullCloudDocs(true);
   } catch (err) {
     docs.forEach((doc) => {
       const key = doc.kind + ':' + doc.docId;
@@ -566,6 +596,24 @@ function setCloudStatus(status, detail = '') {
   state.cloud.error = detail || '';
   if (status === 'synced') state.cloud.lastSync = new Date().toISOString();
   renderAccount();
+}
+
+let lastSyncNotice = '';
+
+// One toast per distinct problem: a retrying sync should not spam the screen.
+function notifySyncProblem(message) {
+  if (!message || message === lastSyncNotice) return;
+  lastSyncNotice = message;
+  toast(message, 'error');
+}
+
+// A rejected write must not leave a timestamp behind that outranks every
+// future remote row; dropping the clock entry lets the device recover as soon
+// as its clock is fixed.
+function resetClock(kind, docId) {
+  const clocks = loadClocks();
+  delete clocks[kind + ':' + docId];
+  saveClocks(clocks);
 }
 
 function setAccountError(message) {
@@ -1014,28 +1062,34 @@ function renderDashboard() {
   const profile = state.profile;
   const applications = state.applications;
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const first = firstName(profile.name);
-  const greetingEl = $('#greeting');
-  if (greetingEl) {
-    greetingEl.innerHTML = first
-      ? greeting + ', <em>' + escapeHtml(first) + '</em>.'
-      : greeting + '.';
+  const metrics = dashboardMetrics(applications);
+  const titleEl = $('#dashTitle');
+  if (titleEl) {
+    if (!metrics.total) {
+      titleEl.textContent = 'No applications filed yet';
+    } else if (metrics.active) {
+      titleEl.textContent = metrics.total + (metrics.total === 1 ? ' application' : ' applications') +
+        ', ' + metrics.active + ' still open';
+    } else if (metrics.offers) {
+      titleEl.textContent = metrics.offers + (metrics.offers === 1 ? ' offer' : ' offers') +
+        ' from ' + metrics.total + (metrics.total === 1 ? ' application' : ' applications');
+    } else {
+      titleEl.textContent = metrics.total + (metrics.total === 1 ? ' application' : ' applications') + ' filed';
+    }
   }
 
   const sub = $('#heroSub');
   if (sub) {
     sub.textContent = profile.resumeText
-      ? 'Add a job posting and knomad tailors your resume, drafts interview prep, and files it in your tracker.'
-      : 'Start with your profile. Add a resume once, then every job you add gets a tailored version.';
+      ? 'Add a posting and knomad tailors your resume, drafts interview prep, and files it in your tracker'
+      : 'Start with your profile. Add a resume once, then every job you add gets a tailored version';
   }
 
   const nameEl = $('#dashName');
   if (nameEl) nameEl.textContent = profile.name || 'Add your name';
   const headlineEl = $('#dashHeadline');
   if (headlineEl) {
-    headlineEl.textContent = profile.headline || 'Your headline appears on every tailored resume.';
+    headlineEl.textContent = profile.headline || 'Your headline appears on every tailored resume';
   }
 
   renderProfilePhoto();
@@ -1122,16 +1176,14 @@ function renderStats(applications) {
         : 'None added in the last 7 days'
     },
     {
-      label: 'Interviews · 7d',
+      label: 'Interviews, last 7 days',
       value: metrics.interviewsThisWeek,
-      note: metrics.interviewsThisWeek ? 'Reached interviewing this week' : 'No interview moves this week',
-      tone: 'amber'
+      note: metrics.interviewsThisWeek ? 'Moved to interviewing this week' : 'No interview moves this week'
     },
     {
       label: 'Active pipeline',
       value: metrics.active,
-      note: metrics.counts.interviewing + ' interviewing now',
-      tone: 'accent'
+      note: metrics.counts.interviewing + ' interviewing now'
     },
     {
       label: 'Response rate',
@@ -1143,7 +1195,7 @@ function renderStats(applications) {
   ];
 
   host.innerHTML = cards.map((card) => (
-    '<article class="stat-card' + (card.tone ? ' ' + card.tone : '') + '">' +
+    '<article class="stat-card">' +
     '<span class="stat-label">' + card.label + '</span>' +
     '<span class="stat-value">' + card.value + '</span>' +
     '<span class="stat-note">' + escapeHtml(card.note) + '</span>' +
@@ -1156,7 +1208,7 @@ function renderActivity(applications) {
   if (!host) return;
 
   if (!applications.length) {
-    host.innerHTML = '<div class="chart-empty">No applications yet.<span>Add a job and it appears on this timeline.</span></div>';
+    host.innerHTML = '<div class="chart-empty">No applications yet<span>Add a job and it appears on this timeline</span></div>';
     return;
   }
 
@@ -1230,8 +1282,8 @@ function renderStatusChart(applications) {
     const replied = total - counts.applied;
     const rate = total ? Math.round((replied / total) * 100) : 0;
     foot.textContent = total
-      ? replied + ' of ' + total + ' moved past applied · ' + rate + '% response rate.'
-      : 'Add your first job to see how the pipeline fills in.';
+      ? replied + ' of ' + total + ' moved past applied · ' + rate + '% response rate'
+      : 'Add your first job to see how the pipeline fills in';
   }
 }
 
@@ -1242,15 +1294,16 @@ function renderRecent(applications) {
   if (!applications.length) {
     host.innerHTML =
       '<div class="empty-state">' +
-      '<p>No applications yet. Add your first posting and knomad fills in the rest.</p>' +
+      '<p>No applications yet. Add your first posting and knomad fills in the rest</p>' +
       '<button class="btn subtle small" data-action="add-job">+ Add your first job</button>' +
       '</div>';
     return;
   }
 
   const recent = applications.slice(0, 5);
-  host.innerHTML = recent.map((app) => {
+  host.innerHTML = recent.map((app, index) => {
     return '<button class="recent-row" data-view="' + escapeHtml(app.id) + '">' +
+      '<span class="recent-no">' + String(index + 1).padStart(2, '0') + '</span>' +
       '<span class="recent-main">' +
       '<strong>' + escapeHtml(app.company) + '</strong>' +
       '<span>' + escapeHtml(app.position) + '</span>' +
@@ -1269,7 +1322,7 @@ function renderUpcoming() {
   const upcoming = allEvents().filter(({ event }) => new Date(event.at).getTime() >= now);
 
   if (!upcoming.length) {
-    host.innerHTML = '<div class="event-empty">Nothing scheduled. Add an interview from any application.</div>';
+    host.innerHTML = '<div class="event-empty">Nothing scheduled. Add an interview from any application</div>';
     return;
   }
 
@@ -1302,7 +1355,7 @@ function renderResumeSheet(profile) {
     return;
   }
 
-  const snippet = profile.resumeText.slice(0, 900);
+  const snippet = profile.resumeText.slice(0, 2000);
   sheet.innerHTML = '';
   const pre = document.createElement('pre');
   pre.className = 'sheet-text';
@@ -1329,14 +1382,14 @@ function renderTracker() {
   if (countEl) {
     const total = state.applications.length;
     countEl.textContent = filtered.length === total
-      ? total + (total === 1 ? ' tracked' : ' tracked')
+      ? total + ' tracked'
       : filtered.length + ' of ' + total + ' shown';
   }
 
   if (!filtered.length) {
     const message = state.applications.length
-      ? 'No applications match these filters.'
-      : 'Nothing tracked yet. Add a job to start.';
+      ? 'No applications match these filters'
+      : 'Nothing tracked yet — add a job to start';
     body.innerHTML = '<tr><td colspan="5"><div class="empty-state">' +
       escapeHtml(message) +
       (state.applications.length ? '' : ' <br><br><button class="btn subtle small" data-action="add-job">+ Add a job</button>') +
@@ -1354,7 +1407,7 @@ function renderTracker() {
       '<td><span class="cell-sub">' + escapeHtml(formatDate(app.dateApplied)) + '</span></td>' +
       '<td><div class="row-actions">' +
       '<button class="btn ghost small" data-view="' + escapeHtml(app.id) + '">View</button>' +
-      '<button class="btn danger small" data-delete="' + escapeHtml(app.id) + '">Delete</button>' +
+      '<button class="btn ghost small quiet-danger" data-delete="' + escapeHtml(app.id) + '">Delete</button>' +
       '</div></td>' +
       '</tr>';
   }).join('');
@@ -1478,8 +1531,7 @@ function jobResultHtml(job) {
     '<div class="job-title-row">' +
     '<a class="job-title" href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer follow">' +
     escapeHtml(job.title) + '</a>' +
-    '<a class="job-provider" href="' + escapeHtml(job.providerHome || '#') + '" target="_blank" rel="noopener">' +
-    escapeHtml(job.provider) + '</a>' +
+    '<a class="job-provider" href="' + escapeHtml(job.providerHome || '#') + '" target="_blank" rel="noopener">' +      'via ' + escapeHtml(job.provider) + '</a>' +
     '</div>' +
     '<div class="job-meta">' + meta + '</div>' +
     '</div>' +
@@ -1509,8 +1561,8 @@ function renderSearchResults() {
   if (jobSearch.status === 'idle') {
     if (count) count.textContent = 'No search yet';
     host.innerHTML = '<div class="search-intro">' +
-      '<h3>Find a remote role that can hire you.</h3>' +
-      '<p>Type a job title. knomad searches the providers by role, then keeps postings that say "Worldwide", "Africa", "Nigeria", or otherwise include your location. Everything is rule-based — no AI, no API key.</p>' +
+      '<h3>Start with a role</h3>' +
+      '<p>Type a title above, or start from one of these.</p>' +
       searchExamplesHtml() +
       '</div>';
     return;
@@ -1525,7 +1577,7 @@ function renderSearchResults() {
   if (jobSearch.status === 'error') {
     if (count) count.textContent = 'Providers unavailable';
     host.innerHTML = '<div class="search-error">' +
-      '<h3>Could not reach the job providers.</h3>' +
+      '<h3>Could not reach the job providers</h3>' +
       '<p>' + escapeHtml(jobSearch.error || 'Check your connection and try again.') + '</p>' +
       '<button class="btn ghost small" type="button" data-retry-search>Try again</button>' +
       '</div>';
@@ -1547,7 +1599,7 @@ function renderSearchResults() {
   if (!visible.length) {
     if (all.length && jobSearch.strict) {
       host.innerHTML = '<div class="search-intro">' +
-        '<h3>No verified matches for ' + escapeHtml(info.label) + ' this time.</h3>' +
+        '<h3>No verified matches for ' + escapeHtml(info.label) + ' this time</h3>' +
         '<p>' + all.length + ' role' + (all.length === 1 ? '' : 's') +
         ' matched "' + escapeHtml(jobSearch.query) + '", but each one lists a different region. ' +
         'Review them with the filter off and check each posting before you apply.</p>' +
@@ -1556,7 +1608,7 @@ function renderSearchResults() {
         '</div>';
     } else {
       host.innerHTML = '<div class="search-intro">' +
-        '<h3>Nothing matched "' + escapeHtml(jobSearch.query) + '".</h3>' +
+        '<h3>Nothing matched "' + escapeHtml(jobSearch.query) + '"</h3>' +
         '<p>Try a shorter or more common title — "developer" instead of "senior React developer", or "support" instead of "customer experience associate". The providers refresh continuously.</p>' +
         searchExamplesHtml() +
         '</div>';
@@ -1565,7 +1617,7 @@ function renderSearchResults() {
   }
 
   const shown = visible.slice(0, 60);
-  host.innerHTML = shown.map(jobResultHtml).join('') +
+  host.innerHTML = '<div class="job-ledger">' + shown.map(jobResultHtml).join('') + '</div>' +
     (visible.length > shown.length
       ? '<p class="search-foot">Showing the first ' + shown.length + ' of ' + visible.length + '. Narrow the role to see fewer, better matches.</p>'
       : '');
@@ -1737,7 +1789,7 @@ function renderCalendar() {
   if (dayList) {
     dayList.innerHTML = dayEvents.length
       ? dayEvents.map(({ app, event }) => eventRowHtml(app, event)).join('')
-      : '<div class="event-empty">Nothing scheduled this day.</div>';
+      : '<div class="event-empty">Nothing scheduled this day</div>';
   }
 
   const now = Date.now();
@@ -1751,14 +1803,14 @@ function renderCalendar() {
   if (upcomingHost) {
     upcomingHost.innerHTML = upcoming.length
       ? upcoming.slice(0, 6).map(({ app, event }) => eventRowHtml(app, event, { withDay: true })).join('')
-      : '<div class="event-empty">No interviews or reminders in the next 30 days.</div>';
+      : '<div class="event-empty">No interviews or reminders in the next 30 days</div>';
   }
 
   const foot = $('#calFoot');
   if (foot) {
     foot.textContent = upcoming.length
-      ? upcoming.length + (upcoming.length === 1 ? ' event' : ' events') + ' in the next 30 days.'
-      : 'Open any application to add an interview or reminder.';
+      ? upcoming.length + (upcoming.length === 1 ? ' event' : ' events') + ' in the next 30 days'
+      : 'Open any application to add an interview or reminder';
   }
 }
 
@@ -1807,7 +1859,7 @@ function renderDetailEvents() {
 
   host.innerHTML = application && events.length
     ? events.map((event) => eventRowHtml(application, event, { full: true, detail: true })).join('')
-    : '<div class="event-empty">No interviews or reminders yet. Add one below.</div>';
+    : '<div class="event-empty">No interviews or reminders yet — add one below</div>';
 }
 
 function handleEventSubmit(event) {
@@ -2314,21 +2366,6 @@ function syncParsedFieldsToForm(parsed) {
 
 // ---------------------------------------------------------------- Resume file parsing
 
-function loadScript(src, globalName) {
-  if (window[globalName]) return Promise.resolve(window[globalName]);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = () => {
-      if (window[globalName]) resolve(window[globalName]);
-      else reject(new Error('Library failed to load'));
-    };
-    script.onerror = () => reject(new Error('Could not load the file reader'));
-    document.head.appendChild(script);
-  });
-}
-
 async function extractResumeText(file) {
   const name = file.name.toLowerCase();
   if (name.endsWith('.txt') || name.endsWith('.md')) {
@@ -2347,10 +2384,8 @@ async function extractResumeText(file) {
 }
 
 async function extractDocx(file) {
-  const JSZip = await loadScript(
-    'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
-    'JSZip'
-  );
+  const module = await import('jszip');
+  const JSZip = module.default || module;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const doc = zip.file('word/document.xml');
   if (!doc) throw new Error('That DOCX has no readable document body.');
@@ -2366,12 +2401,9 @@ async function extractDocx(file) {
 }
 
 async function extractPdf(file) {
-  const pdfjsLib = await loadScript(
-    'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
-    'pdfjsLib'
-  );
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  const module = await import('pdfjs-dist');
+  const pdfjsLib = module.default || module;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
   const data = new Uint8Array(await file.arrayBuffer());
   const documentProxy = await pdfjsLib.getDocument({ data }).promise;
@@ -3584,15 +3616,15 @@ function renderApplication() {
   $('#detailStatus').value = application.status;
   $('#detailDate').textContent = 'Applied ' + (formatDate(application.dateApplied) || '—');
   $('#detailNotes').value = application.notes || '';
-  $('#detailJD').textContent = application.jobDescription || 'No job description saved.';
+  $('#detailJD').textContent = application.jobDescription || 'No job description saved';
   $('#detailResume').textContent = application.resume || '';
-  $('#detailPrep').textContent = application.interviewPrep || 'No interview brief saved.';
+  $('#detailPrep').textContent = application.interviewPrep || 'No interview brief saved';
 
   const resumeMeta = $('#resumeMetaLine');
   if (resumeMeta) {
     resumeMeta.textContent = application.resume
       ? wordCount(application.resume) + ' words · tailored for ' + (application.position || 'this role') + (application.company ? ' at ' + application.company : '')
-      : 'No tailored resume saved yet.';
+      : 'No tailored resume saved yet';
   }
 
   const link = $('#detailLink');
@@ -3753,6 +3785,7 @@ function parseResumeDocument(text) {
 
   let current = null;
   let paragraph = [];
+  let lastListItem = null;
   let bodyHasContent = false;
   const headerTokens = new Set(
     headerLines
@@ -3780,6 +3813,7 @@ function parseResumeDocument(text) {
     const line = mainLines[i].trim();
     if (!line) {
       flushParagraph();
+      lastListItem = null;
       continue;
     }
 
@@ -3791,6 +3825,7 @@ function parseResumeDocument(text) {
     const title = resumeHeadingTitle(line);
     if (title) {
       flushParagraph();
+      lastListItem = null;
       current = { title, items: [] };
       result.sections.push(current);
       continue;
@@ -3798,10 +3833,19 @@ function parseResumeDocument(text) {
 
     if (/^[-•*–—]\s+/.test(line)) {
       flushParagraph();
-      ensureSection().items.push({
+      lastListItem = {
         type: 'li',
         text: cleanResumeInline(line.replace(/^[-•*–—]\s+/, ''))
-      });
+      };
+      ensureSection().items.push(lastListItem);
+      continue;
+    }
+
+    // A wrapped line inside a bullet continues that bullet, the way Markdown
+    // treats a lazy continuation. Without this, wrapped resume bullets break
+    // out of the list and sit flush against the margin.
+    if (lastListItem) {
+      lastListItem.text = (lastListItem.text + ' ' + cleanResumeInline(line)).trim();
       continue;
     }
 
@@ -3877,7 +3921,7 @@ function renderResumePreview(text) {
 
   host.innerHTML = hasContent
     ? resumePreviewHtml(model)
-    : '<div class="resume-empty"><span>No tailored resume saved yet.</span><span>Add a job to generate one.</span></div>';
+    : '<div class="resume-empty"><span>No tailored resume saved yet</span><span>Add a job to generate one</span></div>';
 }
 
 function slugifyFilename(value) {
@@ -3898,9 +3942,8 @@ function resumeFileBase(application) {
 }
 
 async function buildResumePdf(application) {
-  await loadScript(PDF_LIB_URL, 'jspdf');
-  const lib = window.jspdf;
-  const JsPDF = lib && (lib.jsPDF || lib);
+  const module = await import('jspdf');
+  const JsPDF = module.jsPDF || (module.default && module.default.jsPDF);
   if (typeof JsPDF !== 'function') throw new Error('PDF library unavailable');
 
   const model = parseResumeDocument(application.resume);
@@ -4338,7 +4381,7 @@ function gradePractice(application, questions, answers) {
 
 function practiceIntroHtml(questions) {
   return '<div class="practice-intro">' +
-    '<h4>Practice the conversation, one question at a time.</h4>' +
+    '<h4>Practice the conversation, one question at a time</h4>' +
     '<p>knomad pulls the likely questions from your interview brief. Answer in your own words, move at your own pace, and get a score when you finish. Answers stay on this device.</p>' +
     '<div class="practice-facts">' +
     '<span class="practice-fact">' + questions.length + ' questions</span>' +
@@ -4382,10 +4425,10 @@ function practiceResultsHtml(questions, session) {
   const score = session.score != null ? session.score : 0;
   const tone = practiceTone(score);
   const headline = score >= 75
-    ? 'Strong, specific answers.'
+    ? 'Strong, specific answers'
     : score >= 50
-      ? 'Solid foundation. Tighten the details.'
-      : 'Good start. Add specifics and structure.';
+      ? 'A solid foundation — tighten the details'
+      : 'A good start — add specifics and structure';
   const summary = score >= 75
     ? 'You sound ready. Do one more pass to keep each answer tight and conversational.'
     : score >= 50
@@ -4433,14 +4476,7 @@ function renderPractice() {
   ensurePracticeAnswers(session, questions.length);
 
   const meta = $('#practiceMeta');
-  if (meta) {
-    if (session.completed) meta.textContent = 'Scored ' + session.score + '/100';
-    else if (session.started) {
-      meta.textContent = 'Question ' + (Math.min(session.index, questions.length - 1) + 1) + ' of ' + questions.length;
-    } else {
-      meta.textContent = questions.length + ' questions';
-    }
-  }
+  if (meta) meta.textContent = questions.length + ' questions';
 
   if (session.completed && session.results.length) {
     host.innerHTML = practiceResultsHtml(questions, session);
