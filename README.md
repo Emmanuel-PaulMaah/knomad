@@ -20,7 +20,8 @@ It works entirely offline on `localStorage`, and optionally syncs your profile, 
 Sync rules:
 
 - Each save is diffed locally and sent to the Function after a short debounce.
-- The server keeps the row with the newest `client_updated_at` (last write wins).
+- The server keeps the row with the newest `client_updated_at` (last write wins), and reports each batch result so a dropped write is never shown as "synced".
+- A device clock more than five minutes ahead is rejected with a 409; accepting it would let that timestamp outrank every later write from every other device.
 - Deletions are soft (`deleted_at`) so they propagate instead of resurrecting.
 - Realtime is best-effort; a 30-second poll covers reconnects, and the app also pulls when the tab becomes visible or the network returns.
 - `knomad_gemini_key` is never included in a synced document.
@@ -226,7 +227,7 @@ Both readers are third-party services. If a page is sensitive or under NDA, past
 - **DOCX** — unzipped with [JSZip](https://stuk.github.io/jszip/) and the document XML is read.
 - **DOC** — unsupported; save as DOCX or paste the text.
 
-pdf.js and JSZip load from jsDelivr on demand. If a library can't load (offline, blocked CDN), knomad asks you to paste the text instead. You can always paste resume text directly into the profile.
+pdf.js and JSZip ship with the app as lazily loaded chunks. If a chunk can't load (offline, blocked by a proxy), knomad asks you to paste the text instead. You can always paste resume text directly into the profile.
 
 ## Resume autofill
 
@@ -268,9 +269,9 @@ The back arrow returns to whichever page you came from (dashboard, tracker, or c
 
 - **Copy text** copies the raw tailored resume.
 - **Print** opens the browser print dialog. A dedicated print stylesheet strips the app chrome and prints only the resume document.
-- **Download PDF** builds a letter-size PDF with [jsPDF](https://github.com/parallax/jsPDF), loaded on demand from jsDelivr. The filename combines your name, company, and role.
+- **Download PDF** builds a letter-size PDF with [jsPDF](https://github.com/parallax/jsPDF), bundled and loaded on demand. The filename combines your name, company, and role.
 
-The `---` + `BASIC MODE NOTES` block from basic mode stays in storage but is hidden from both the preview and the PDF. If jsPDF cannot load (offline or blocked CDN), knomad falls back to the print dialog so you still get a document.
+The `---` + `BASIC MODE NOTES` block from basic mode stays in storage but is hidden from both the preview and the PDF. If jsPDF cannot load (offline, or the chunk is blocked), knomad falls back to the print dialog so you still get a document.
 
 ## Interview practice
 
@@ -322,7 +323,7 @@ Stored under these `localStorage` keys:
 - **Company/role detection is heuristic** in basic mode. The model usually fixes it in AI mode, and you can rename fields only by editing the saved data.
 - **Resume output is rendered HTML and PDF**, but the underlying tailored resume is still plain text with no rich formatting controls.
 - **Interview scoring is heuristic** — it measures length, structure, specifics, and language, not the truth or quality of your experience. Treat the score as a practice prompt, not a verdict.
-- **PDF and resume-file parsing need a CDN** — jsPDF, pdf.js, and JSZip load from jsDelivr. When they are unavailable, knomad falls back to printing or asks you to paste text.
+- **PDF and resume-file parsing load on demand** — jsPDF, pdf.js, and JSZip are bundled as separate chunks and fetched the first time you use them. When that fails, knomad falls back to printing or asks you to paste text.
 - **Profile autofill is heuristic** — it can miss a name on unusual layouts or grab the wrong line. Review the filled fields before saving, and use the **Fill profile** button after editing resume text.
 - **Reminders require knomad to be open** — there is no background service worker. System notifications also need notification permission and a secure context.
 - **No recurring events** — each interview or reminder is a single date and time.

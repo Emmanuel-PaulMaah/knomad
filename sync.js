@@ -220,8 +220,8 @@ export async function uploadResumeFile(file) {
   return data;
 }
 
-export async function aiChat(prompt, model) {
-  const data = await api("/ai/chat", { method: "POST", body: { prompt, model } });
+export async function aiChat(prompt) {
+  const data = await api("/ai/chat", { method: "POST", body: { prompt } });
   if (!data || typeof data.text !== "string") throw new Error("AI Gateway returned no text");
   return data.text;
 }

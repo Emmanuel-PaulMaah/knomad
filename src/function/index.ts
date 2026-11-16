@@ -30,6 +30,13 @@ app.use(
   }),
 );
 
+// API responses are JSON or a presigned URL; never let a browser sniff them.
+app.use("*", async (c, next) => {
+  await next();
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Cache-Control", "no-store");
+});
+
 // ---------------------------------------------------------------- database
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
@@ -90,6 +97,52 @@ function safeName(name: string): string {
     .slice(0, 120) || "resume";
 }
 
+// Only these extensions are accepted, and the stored Content-Type is derived
+// from the extension rather than the client's `file.type`. The bucket is
+// private, but a presigned GET is still an origin: it must never serve
+// text/html or image/svg+xml with attacker-controlled contents.
+const RESUME_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  txt: "text/plain; charset=utf-8",
+  md: "text/markdown; charset=utf-8",
+};
+
+function extensionOf(name: string): string {
+  const match = /\.([a-z0-9]+)$/i.exec(name || "");
+  return match ? match[1].toLowerCase() : "";
+}
+
+function resumeTypeFor(name: string): string {
+  return RESUME_TYPES[extensionOf(name)] || "";
+}
+
+function hasExpectedMagic(bytes: Buffer, ext: string): boolean {
+  if (ext === "pdf") return bytes.subarray(0, 5).toString("latin1") === "%PDF-";
+  if (ext === "docx") {
+    return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+  }
+  return true; // txt and md have no signature
+}
+
+function dispositionFor(type: string, name: string): string {
+  const mode = type === "application/pdf" ? "inline" : "attachment";
+  return `${mode}; filename="${safeName(name)}"`;
+}
+
+function signedResumeUrl(key: string, name: string, type: string) {
+  return getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ResponseContentType: type,
+      ResponseContentDisposition: dispositionFor(type, name),
+    }),
+    { expiresIn: 3600 },
+  );
+}
+
 // ---------------------------------------------------------------- ai gateway
 
 type GatewayModel = { id?: string; enabled?: boolean };
@@ -146,6 +199,12 @@ type DocInput = {
   deleted?: boolean;
 };
 
+// A client clock that runs ahead must never enter the table: its timestamp
+// would beat every later write from every other device, and last-write-wins
+// would silently discard their edits forever. Reject it and tell the client,
+// instead of clamping, so the skew stays visible and fixable.
+const MAX_CLOCK_SKEW_MS = 5 * 60_000;
+
 function validateDoc(input: DocInput) {
   const kind = input?.kind;
   if (kind !== "profile" && kind !== "application") {
@@ -158,6 +217,12 @@ function validateDoc(input: DocInput) {
   const clientUpdatedAt = Number(input.clientUpdatedAt);
   if (!Number.isFinite(clientUpdatedAt) || clientUpdatedAt <= 0) {
     throw new HttpError(400, "clientUpdatedAt must be a positive epoch-milliseconds number");
+  }
+  if (clientUpdatedAt > Date.now() + MAX_CLOCK_SKEW_MS) {
+    throw new HttpError(
+      409,
+      "This device's clock is more than 5 minutes ahead. Fix the clock, then save again.",
+    );
   }
 
   const payload =
@@ -260,8 +325,22 @@ app.post("/docs/batch", async (c) => {
   const docs = Array.isArray(body?.docs) ? body.docs.slice(0, 100) : [];
   if (!docs.length) throw new HttpError(400, "docs must be a non-empty array");
 
+  // One bad or rejected document must not fail the whole batch: the client
+  // reports each result, so it can tell a saved write from a dropped one.
   const results = [];
-  for (const doc of docs) results.push(await putDoc(userId, doc));
+  for (const doc of docs) {
+    try {
+      results.push(await putDoc(userId, doc));
+    } catch (err) {
+      if (!(err instanceof HttpError)) console.error("knomad doc write failed", err);
+      results.push({
+        kind: doc?.kind ?? null,
+        docId: doc?.docId ?? null,
+        applied: false,
+        error: err instanceof HttpError ? err.message : "Document could not be saved",
+      });
+    }
+  }
   return c.json({ results });
 });
 
@@ -279,8 +358,34 @@ app.post("/realtime/token", async (c) => {
   return c.json(sealed);
 });
 
+// The Gateway token is a shared secret: one signed-in user must not be able to
+// burn it. The cap is per warm instance, so treat it as a speed bump, not a
+// quota — but it stops a single client from hammering the gateway in a loop.
+const AI_MAX_PROMPT_CHARS = 32_000;
+const AI_RATE_WINDOW_MS = 5 * 60_000;
+const AI_RATE_MAX = 20;
+const AI_TIMEOUT_MS = 60_000;
+
+const aiHits = new Map<string, number[]>();
+
+function enforceAiRate(userId: string) {
+  const now = Date.now();
+  const recent = (aiHits.get(userId) || []).filter((at) => now - at < AI_RATE_WINDOW_MS);
+  if (recent.length >= AI_RATE_MAX) {
+    throw new HttpError(429, "Too many AI requests. Try again in a few minutes.");
+  }
+  recent.push(now);
+  aiHits.set(userId, recent);
+
+  if (aiHits.size > 1000) {
+    for (const [key, hits] of aiHits) {
+      if (!hits.some((at) => now - at < AI_RATE_WINDOW_MS)) aiHits.delete(key);
+    }
+  }
+}
+
 app.post("/ai/chat", async (c) => {
-  await requireUser(c.req.header("authorization"));
+  const userId = await requireUser(c.req.header("authorization"));
 
   const base = process.env.NEON_AI_GATEWAY_BASE_URL;
   const token = process.env.NEON_AI_GATEWAY_TOKEN;
@@ -289,21 +394,40 @@ app.post("/ai/chat", async (c) => {
   const body = (await c.req.json()) as { prompt?: string; model?: string };
   const prompt = typeof body?.prompt === "string" ? body.prompt : "";
   if (!prompt.trim()) throw new HttpError(400, "prompt is required");
+  if (prompt.length > AI_MAX_PROMPT_CHARS) {
+    throw new HttpError(413, `prompt must be ${AI_MAX_PROMPT_CHARS} characters or fewer`);
+  }
 
-  const model = body.model || (await pickModel(base.replace(/\/$/, ""), token));
+  enforceAiRate(userId);
 
-  const response = await fetch(base.replace(/\/$/, "") + "/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.4,
-    }),
-  });
+  // The model is chosen server-side (KNOMAD_AI_MODEL, else a Gateway default).
+  // Trusting a client-supplied id would let any user hit the priciest model.
+  const model = await pickModel(base.replace(/\/$/, ""), token);
+
+  let response: Response;
+  try {
+    response = await fetch(base.replace(/\/$/, "") + "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.4,
+      }),
+      // AbortSignal.timeout is Node 17.3+; fall back to no signal rather than
+      // failing every request on an older runtime.
+      signal:
+        typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(AI_TIMEOUT_MS) : undefined,
+    });
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new HttpError(504, "AI Gateway timed out");
+    }
+    throw new HttpError(502, "Could not reach the AI Gateway");
+  }
 
   const raw = await response.text();
   if (!response.ok) {
@@ -337,22 +461,29 @@ app.post("/resume", async (c) => {
   if (!(file instanceof File)) throw new HttpError(400, "multipart field 'file' is required");
   if (file.size > 15 * 1024 * 1024) throw new HttpError(413, "Resume must be 15 MB or smaller");
 
+  const name = file.name || "resume";
+  const type = resumeTypeFor(name);
+  if (!type) throw new HttpError(415, "Resume must be a PDF, DOCX, TXT, or MD file");
+
   const bytes = Buffer.from(await file.arrayBuffer());
-  const key = `users/${userId}/resumes/${Date.now()}-${safeName(file.name)}`;
+  if (!hasExpectedMagic(bytes, extensionOf(name))) {
+    throw new HttpError(415, "That file's contents do not match its extension");
+  }
+
+  const key = `users/${userId}/resumes/${Date.now()}-${safeName(name)}`;
 
   await s3.send(
     new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
       Body: bytes,
-      ContentType: file.type || "application/octet-stream",
-      ContentDisposition: `inline; filename="${safeName(file.name)}"`,
+      ContentType: type,
+      ContentDisposition: dispositionFor(type, name),
+      CacheControl: "private, max-age=0",
     }),
   );
 
-  const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
-    expiresIn: 3600,
-  });
+  const url = await signedResumeUrl(key, name, type);
 
   return c.json({ key, size: bytes.length, url });
 });
@@ -364,9 +495,8 @@ app.get("/resume/url", async (c) => {
   if (!key.startsWith(`users/${userId}/`)) throw new HttpError(403, "Not your resume");
   if (key.includes("..")) throw new HttpError(400, "Invalid key");
 
-  const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
-    expiresIn: 3600,
-  });
+  const name = key.split("/").pop() || "resume";
+  const url = await signedResumeUrl(key, name, resumeTypeFor(name) || "application/octet-stream");
   return c.json({ key, url });
 });
 

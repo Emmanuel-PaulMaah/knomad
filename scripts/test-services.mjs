@@ -138,6 +138,37 @@ async function main() {
       }),
     });
 
+    // A clock that runs an hour ahead must be refused, not stored: it would
+    // outrank every later write from every other device.
+    const future = await jsonFetch(fn + "/docs", {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "profile",
+        docId: "me",
+        payload: { name: "Future write", marker: "e2e-future" },
+        clientUpdatedAt: now + 60 * 60 * 1000,
+      }),
+    });
+
+    // The same rejection inside a batch must come back as applied:false with a
+    // reason, so the client can stop claiming the write was saved.
+    const batch = await jsonFetch(fn + "/docs/batch", {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        docs: [
+          {
+            kind: "application",
+            docId: "e2e-clock",
+            payload: { marker: "e2e-clock" },
+            clientUpdatedAt: now + 60 * 60 * 1000,
+          },
+        ],
+      }),
+    });
+    const batchResult = batch.body?.results?.[0];
+
     const pull = await jsonFetch(fn + "/docs?since=1970-01-01T00:00:00.000Z", {
       headers: authHeaders,
     });
@@ -147,6 +178,10 @@ async function main() {
       first.response.ok &&
       stale.response.ok &&
       stale.body?.applied === false &&
+      future.response.status === 409 &&
+      batch.response.ok &&
+      batchResult?.applied === false &&
+      /clock/i.test(batchResult?.error || "") &&
       row &&
       row.payload?.marker === "e2e-1";
 
@@ -154,8 +189,8 @@ async function main() {
       "Postgres + sync API",
       ok ? "pass" : "fail",
       ok
-        ? "wrote, ignored a stale write, and read the newer payload back"
-        : JSON.stringify({ first: first.body, stale: stale.body, row }),
+        ? "wrote, ignored a stale write, rejected a future clock in /docs and /docs/batch, and read the newer payload back"
+        : JSON.stringify({ first: first.body, stale: stale.body, future: future.body, batch: batch.body, row }),
     );
   }
 
@@ -171,18 +206,32 @@ async function main() {
       body: form,
     });
 
+    // A file whose name is not on the allowlist must be refused, not stored
+    // with attacker-chosen Content-Type and served inline.
+    const rejectedForm = new FormData();
+    rejectedForm.append(
+      "file",
+      new Blob(["<script>alert(1)</script>"], { type: "text/html" }),
+      "resume.html",
+    );
+    const rejected = await jsonFetch(fn + "/resume", {
+      method: "POST",
+      headers: authHeaders,
+      body: rejectedForm,
+    });
+
     if (!upload.response.ok || !upload.body?.url) {
       record("Object Storage", "fail", JSON.stringify(upload.body));
     } else {
       const download = await fetch(upload.body.url);
       const downloaded = Buffer.from(await download.arrayBuffer());
-      const ok = download.ok && downloaded.equals(bytes);
+      const ok = download.ok && downloaded.equals(bytes) && rejected.response.status === 415;
       record(
         "Object Storage",
         ok ? "pass" : "fail",
         ok
-          ? `uploaded ${upload.body.key} and verified the presigned download`
-          : `presigned download failed: HTTP ${download.status}`,
+          ? `uploaded ${upload.body.key}, verified the presigned download, and refused a .html upload`
+          : `storage check failed: HTTP ${download.status}, reject=${rejected.response.status}`,
       );
     }
   }
