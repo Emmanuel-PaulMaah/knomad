@@ -1163,6 +1163,246 @@
       .profile-photo { width: 64px; height: 64px; }
     }
 
+    /* ---------- Profile sheet (read-only view) ---------- */
+
+    .profile-sheet { padding: 28px; }
+
+    .profile-sheet-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .profile-sheet .profile-photo {
+      width: 88px;
+      height: 88px;
+      font-size: 22px;
+    }
+
+    .profile-sheet .profile-photo-edit {
+      padding: 0;
+      cursor: pointer;
+      transition: border-color 0.14s var(--ease), transform 0.08s var(--ease);
+    }
+
+    .profile-sheet .profile-photo-edit:hover { border-color: var(--accent); }
+    .profile-sheet .profile-photo-edit:active { transform: translateY(1px); }
+
+    .profile-sheet-identity {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      padding-top: 2px;
+    }
+
+    .profile-read-name,
+    .profile-read-headline,
+    .profile-contact-item {
+      justify-self: start;
+      padding: 0 2px;
+      border: 0;
+      border-radius: 4px;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .profile-read-name {
+      font-size: 26px;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+    }
+
+    .profile-read-headline {
+      color: var(--text-2);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .profile-read-name:hover,
+    .profile-read-headline:hover {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--accent-hard);
+    }
+
+    .profile-read-name.is-empty,
+    .profile-read-headline.is-empty {
+      color: var(--muted);
+    }
+
+    .profile-read-name.is-empty:hover,
+    .profile-read-headline.is-empty:hover {
+      color: var(--accent);
+    }
+
+    .profile-sheet-contact {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      margin-top: 10px;
+    }
+
+    .profile-contact-item {
+      color: var(--muted);
+      font-size: 12.5px;
+      border-bottom: 1px dashed transparent;
+    }
+
+    .profile-contact-item:hover {
+      color: var(--text);
+      border-bottom-color: var(--line-strong);
+    }
+
+    .profile-contact-item.is-empty { font-style: italic; }
+
+    .profile-sheet-section {
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .profile-sheet-section:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    .profile-sheet-section > h3 {
+      margin-bottom: 10px;
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .profile-read-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 16px;
+    }
+
+    .profile-read-grid .span-2 { grid-column: span 2; }
+
+    .profile-read-field,
+    .profile-read-block,
+    .profile-read-skills,
+    .profile-read-resume {
+      display: grid;
+      gap: 2px;
+      width: calc(100% + 20px);
+      margin-left: -10px;
+      padding: 9px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      transition: background-color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+
+    .profile-read-field:hover,
+    .profile-read-block:hover,
+    .profile-read-skills:hover,
+    .profile-read-resume:hover {
+      background: var(--bg-2);
+      border-color: var(--line);
+    }
+
+    .profile-read-label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .profile-read-value {
+      color: var(--text);
+      font-size: 13.5px;
+      overflow-wrap: anywhere;
+    }
+
+    .profile-read-value.is-empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .profile-read-block {
+      margin-bottom: 0;
+      color: var(--text-2);
+      font-size: 13.5px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+    }
+
+    .profile-read-block.is-empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .profile-read-skills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .profile-skill-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text-2);
+      font-size: 12px;
+    }
+
+    .profile-read-skills.is-empty {
+      color: var(--muted);
+      font-size: 13px;
+      font-style: italic;
+    }
+
+    .profile-read-resume {
+      gap: 5px;
+    }
+
+    .profile-read-resume.is-empty .profile-read-value { font-style: italic; }
+
+    .profile-resume-excerpt {
+      display: -webkit-box;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+
+    .profile-edit-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    @media (max-width: 640px) {
+      .profile-sheet { padding: 20px; }
+      .profile-sheet-head { gap: 14px; }
+      .profile-sheet .profile-photo { width: 64px; height: 64px; }
+      .profile-read-name { font-size: 21px; }
+      .profile-read-grid { grid-template-columns: 1fr; }
+      .profile-read-grid .span-2 { grid-column: auto; }
+      .form-actions { align-items: flex-start; flex-direction: column; }
+      .profile-edit-actions { width: 100%; }
+      .profile-edit-actions .btn { flex: 1; }
+    }
+
     /* ---------- Dropzone ---------- */
 
     .dropzone {
@@ -2039,6 +2279,151 @@
     .brief-card { margin-top: 20px; }
     .brief-card .output { max-height: 420px; }
 
+    /* ---------- Friends & shared inbox ---------- */
+
+    .social-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .social-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    .social-list {
+      display: grid;
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .social-list:empty { display: none; }
+
+    .social-empty {
+      padding: 16px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+
+    .social-person,
+    .share-item {
+      padding: 14px 16px;
+      background: var(--panel);
+    }
+
+    .social-person { display: flex; align-items: center; gap: 12px; }
+
+    .social-avatar {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 600;
+      overflow: hidden;
+    }
+
+    .social-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+    .social-person-main {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+
+    .social-person-main strong {
+      font-size: 13px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .social-person-main span {
+      color: var(--muted);
+      font-size: 11.5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .social-person-actions,
+    .share-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .social-person-actions { flex-shrink: 0; }
+
+    .share-item { display: grid; gap: 10px; }
+
+    .share-item.unread { box-shadow: inset 2px 0 0 var(--accent); }
+
+    .share-head { display: flex; gap: 12px; align-items: flex-start; }
+
+    .share-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+
+    .share-role { font-size: 13.5px; font-weight: 500; }
+
+    .share-role span { color: var(--muted); font-weight: 400; }
+
+    .share-meta {
+      color: var(--muted);
+      font-size: 11.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .share-note {
+      margin: 3px 0 0;
+      padding-left: 9px;
+      border-left: 2px solid var(--line-strong);
+      color: var(--text-2);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+
+    .unread-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .share-actions { padding-left: 46px; }
+
+    .friend-add-row { display: flex; gap: 8px; }
+
+    .friend-add-row input { flex: 1; min-width: 0; }
+
+    .share-error { margin: 0 0 12px; color: #e8b3a8; font-size: 12px; }
+
+    .rail-btn { position: relative; }
+
+    .rail-badge {
+      position: absolute;
+      top: 1px;
+      right: 1px;
+      min-width: 15px;
+      height: 15px;
+      padding: 0 4px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: var(--bg);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 15px;
+      text-align: center;
+    }
+
     /* ---------- Settings ---------- */
 
     .settings-grid {
@@ -2122,6 +2507,7 @@
       .charts-grid { grid-template-columns: 1fr; }
       .calendar-grid { grid-template-columns: 1fr; }
       .app-grid { grid-template-columns: 1fr; }
+      .social-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .form-grid .span-2 { grid-column: auto; }
       .sheet { flex: none; max-height: 440px; }
@@ -2169,6 +2555,10 @@
       .cal-day { min-height: 56px; padding: 5px 6px; }
       .cal-weekdays span { padding-left: 5px; }
       .settings-grid { grid-template-columns: 1fr; }
+      .social-person { flex-wrap: wrap; }
+      .share-actions { padding-left: 0; }
+      .friend-add-row { flex-wrap: wrap; }
+      .friend-add-row .btn { width: 100%; }
       .dropzone { align-items: flex-start; flex-direction: column; gap: 12px; }
       .dropzone-action { align-self: flex-start; }
       .event-form-grid { grid-template-columns: 1fr; }
@@ -2538,6 +2928,10 @@
       <button class="rail-btn" data-page="search" title="Find jobs" aria-label="Find jobs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
       </button>
+      <button class="rail-btn" data-page="friends" title="Friends" aria-label="Friends">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 19.4c0-3 2.8-5.1 6.2-5.1s6.2 2.1 6.2 5.1"/><path d="M16.4 5.2a3.4 3.4 0 0 1 0 6.4"/><path d="M17.6 14.6c2.2.5 3.6 2.1 3.6 4.1"/></svg>
+        <span class="rail-badge" id="friendsBadge" hidden>0</span>
+      </button>
       <button class="rail-btn" data-page="tracker" title="Applications" aria-label="Applications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
       </button>
@@ -2702,6 +3096,78 @@
           </p>
         </section>
 
+        <!-- Friends -->
+        <section class="page" id="friendsPage">
+          <div class="page-head">
+            <div>
+              <p class="page-desc">Add people you trust, send them job leads, and keep every introduction in one shared inbox.</p>
+              <p class="label-mono" id="friendsSummary">Sign in to add friends</p>
+            </div>
+            <div class="social-head-actions" id="friendsHeadActions" hidden>
+              <button class="btn ghost small" id="friendsRefreshBtn" type="button">Refresh</button>
+              <button class="btn primary small" id="friendsSendBtn" type="button">Send a job</button>
+            </div>
+          </div>
+
+          <div class="card empty-state" id="friendsSignedOut" hidden>
+            <p>Friends and the shared inbox live in your knomad account.</p>
+            <button class="btn primary small" type="button" data-page-target="settings">Sign in or create an account</button>
+          </div>
+
+          <div id="friendsSignedIn" hidden>
+            <div class="social-grid">
+              <div class="card">
+                <div class="card-head">
+                  <h3>Shared inbox</h3>
+                  <span class="label-mono" id="inboxCount"></span>
+                </div>
+                <div class="social-list" id="sharedInbox"></div>
+              </div>
+
+              <div class="stack">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Add a friend</h3>
+                    <span class="label-mono">By email</span>
+                  </div>
+                  <form id="friendRequestForm" class="field" autocomplete="off" style="margin-bottom: 8px;">
+                    <label class="sr-only" for="friendEmail">Friend's email</label>
+                    <div class="friend-add-row">
+                      <input type="email" id="friendEmail" placeholder="friend@example.com" required>
+                      <button class="btn primary small" id="friendRequestBtn" type="submit">Send request</button>
+                    </div>
+                  </form>
+                  <p class="field-help">They need a knomad account. The request waits until they accept it.</p>
+                </div>
+
+                <div class="card" id="friendRequestsCard" hidden>
+                  <div class="card-head">
+                    <h3>Requests</h3>
+                    <span class="label-mono" id="requestCount"></span>
+                  </div>
+                  <div class="social-list" id="friendRequests"></div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Friends</h3>
+                    <span class="label-mono" id="friendCount"></span>
+                  </div>
+                  <div class="social-list" id="friendList"></div>
+                </div>
+
+                <div class="card" id="sentCard" hidden>
+                  <div class="card-head">
+                    <h3>Sent</h3>
+                    <span class="label-mono" id="sentCount"></span>
+                  </div>
+                  <div class="social-list" id="sentList"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Tracker -->
         <section class="page" id="trackerPage">
           <div class="page-head">
@@ -2798,10 +3264,13 @@
         <!-- Profile -->
         <section class="page" id="profilePage">
           <div class="page-head">
-            <p class="page-desc">Your profile and base resume. Every tailored resume is built from them.</p>
+            <p class="page-desc">Your profile and base resume. Every tailored resume is built from them. Click any detail to edit it.</p>
+            <button type="button" class="btn ghost small" id="profileEditBtn">Edit profile</button>
           </div>
 
-          <form class="card" id="profileForm" autocomplete="off">
+          <div class="card profile-sheet" id="profileView"></div>
+
+          <form class="card" id="profileForm" autocomplete="off" hidden>
             <div class="form-section">
               <h3>Basics</h3>
               <p>These details head every tailored resume.</p>
@@ -2905,8 +3374,11 @@
             </div>
 
             <div class="form-actions">
-              <span class="label-mono">Saved locally</span>
-              <button type="submit" class="btn primary">Save profile</button>
+              <span class="label-mono" id="profileSaveHint">Changes are saved only when you click Save profile.</span>
+              <div class="profile-edit-actions">
+                <button type="button" class="btn ghost" id="profileCancelBtn">Cancel</button>
+                <button type="submit" class="btn primary" id="profileSaveBtn">Save profile</button>
+              </div>
             </div>
           </form>
         </section>
@@ -3046,6 +3518,7 @@
                 <option value="offer">Offer</option>
                 <option value="rejected">Rejected</option>
               </select>
+              <button class="btn ghost small" id="shareAppBtn" type="button">Send to friend</button>
               <button class="btn ghost small quiet-danger" id="deleteAppBtn" type="button">Delete</button>
             </div>
           </div>
@@ -3240,6 +3713,52 @@
           <button class="btn ghost small" type="button" id="retryAddBtn">Try another link</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Send job modal -->
+  <div class="modal" id="shareJobModal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="shareJobTitle">
+      <button class="modal-x" data-close aria-label="Close">×</button>
+
+      <p class="eyebrow">Shared inbox</p>
+      <h2 id="shareJobTitle">Send a job to a friend</h2>
+      <p class="modal-sub">They will see it in their shared inbox with your note attached, and can track it as an application in one click.</p>
+
+      <form id="shareJobForm" autocomplete="off">
+        <div class="field">
+          <label for="shareFriend">Friend</label>
+          <select id="shareFriend" required></select>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="shareCompany">Company</label>
+            <input id="shareCompany" placeholder="e.g. Acme" maxlength="240">
+          </div>
+          <div class="field">
+            <label for="sharePosition">Role</label>
+            <input id="sharePosition" placeholder="e.g. Product designer" maxlength="240">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="shareUrl">Job link</label>
+          <input type="url" id="shareUrl" placeholder="https://company.com/jobs/role" maxlength="2000">
+        </div>
+
+        <div class="field">
+          <label for="shareNote">Note</label>
+          <textarea id="shareNote" rows="3" maxlength="2000" placeholder="Why this one? A short heads-up is fine."></textarea>
+        </div>
+
+        <p class="share-error" id="shareJobError" hidden></p>
+
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Cancel</button>
+          <button type="submit" class="btn primary" id="shareJobSubmit">Send job</button>
+        </div>
+      </form>
     </div>
   </div>
 

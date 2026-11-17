@@ -224,6 +224,16 @@ const state = {
     lastSync: null,
     error: '',
     realtime: false
+  },
+  social: {
+    status: 'off',
+    error: '',
+    friends: [],
+    incoming: [],
+    outgoing: [],
+    inbox: [],
+    sent: [],
+    unread: 0
   }
 };
 
@@ -515,6 +525,7 @@ function startPolling() {
     if (!cloudReady() || document.hidden) return;
     flushCloudQueue();
     pullCloudDocs(false);
+    loadSocial({ silent: true });
   }, CLOUD_POLL_MS);
 }
 
@@ -528,6 +539,7 @@ function stopCloudSync() {
   cloudDiffProfile = null;
   cloudDiffApplications.clear();
   state.cloud = { user: null, status: 'off', lastSync: null, error: '', realtime: false };
+  resetSocial();
 }
 
 async function startCloudSync(session) {
@@ -571,6 +583,7 @@ async function startCloudSync(session) {
   await startRealtime();
   startPolling();
   setCloudStatus('synced');
+  loadSocial({ silent: true });
 }
 
 async function restoreCloudSession() {
@@ -713,6 +726,7 @@ async function handleCloudSyncNow() {
   try {
     await flushCloudQueue();
     await pullCloudDocs(false);
+    await loadSocial({ silent: true });
     toast('Workspace synced');
   } catch (err) {
     setAccountError(err.message);
@@ -996,6 +1010,7 @@ const calendarState = {
 const PAGE_TITLES = {
   dashboard: 'Dashboard',
   search: 'Find jobs',
+  friends: 'Friends',
   tracker: 'Applications',
   calendar: 'Calendar',
   application: 'Application',
@@ -1009,6 +1024,8 @@ let applicationReturnPage = 'dashboard';
 function showPage(page) {
   const target = PAGE_TITLES[page] ? page : 'dashboard';
   currentPage = target;
+
+  if (target !== 'profile' && profileEditing) cancelProfileEdit({ silent: true });
 
   $$('.page').forEach((section) => {
     section.classList.toggle('active', section.id === target + 'Page');
@@ -1031,12 +1048,17 @@ function showPage(page) {
 
   if (target === 'dashboard') renderDashboard();
   if (target === 'search') renderJobSearch();
+  if (target === 'friends') {
+    renderFriends();
+    if (cloudReady()) loadSocial({ silent: state.social.status === 'ready' });
+  }
   if (target === 'tracker') renderTracker();
   if (target === 'calendar') renderCalendar();
   if (target === 'application') renderApplication();
   if (target === 'profile') {
     applyProfileToForm();
     renderProfileResumeMeta();
+    renderProfileMode();
   }
   if (target === 'settings') renderSettings();
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1046,6 +1068,7 @@ function refreshCurrentPage() {
   if (currentPage === 'dashboard') renderDashboard();
   else if (currentPage === 'tracker') renderTracker();
   else if (currentPage === 'calendar') renderCalendar();
+  else if (currentPage === 'friends') renderFriends();
   else if (currentPage === 'settings') renderSettings();
   else if (currentPage === 'application') {
     if (currentDetailId) renderApplication();
@@ -1053,6 +1076,7 @@ function refreshCurrentPage() {
   } else if (currentPage === 'profile') {
     applyProfileToForm();
     renderProfileResumeMeta();
+    renderProfileMode();
   }
 }
 
@@ -1537,6 +1561,7 @@ function jobResultHtml(job) {
     '</div>' +
     '<div class="job-actions">' +
     '<a class="btn ghost small" href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer follow">Open ↗</a>' +
+    '<button class="btn ghost small" type="button" data-send-job="' + escapeHtml(job.id) + '">Send</button>' +
     '<button class="btn subtle small" type="button" data-track-job="' + escapeHtml(job.id) + '">Track</button>' +
     '</div>' +
     '</article>';
@@ -1686,6 +1711,17 @@ function trackSearchJob(id) {
     company: job.company,
     position: job.title,
     description: job.description || ''
+  });
+}
+
+function sendSearchJob(id) {
+  const job = jobSearch.jobs.find((entry) => String(entry.id) === String(id));
+  if (!job) return;
+  openShareModal({
+    company: job.company,
+    position: job.title,
+    url: job.url,
+    jobDescription: job.description || ''
   });
 }
 
@@ -1920,6 +1956,165 @@ function removeEventConfirmed(eventId) {
 
 // ---------------------------------------------------------------- Profile form
 
+let profileEditing = false;
+let profileEditSnapshot = null;
+
+const PROFILE_EDIT_TARGETS = {
+  name: '#profileName',
+  headline: '#profileHeadline',
+  email: '#profileEmail',
+  phone: '#profilePhone',
+  location: '#profileLocation',
+  linkedin: '#profileLinkedin',
+  github: '#profileGithub',
+  website: '#profileWebsite',
+  summary: '#profileSummary',
+  skills: '#profileSkills',
+  resume: '#profileResumeText',
+  photo: '#profilePhotoBtn'
+};
+
+function profileViewField(key, label, value, placeholder, extraClass = '') {
+  const text = String(value || '').trim();
+  return '<button type="button" class="profile-read-field' + (extraClass ? ' ' + extraClass : '') +
+    '" data-profile-edit="' + key + '" aria-label="Edit ' + escapeHtml(label) + '">' +
+    '<span class="profile-read-label">' + escapeHtml(label) + '</span>' +
+    '<span class="profile-read-value' + (text ? '' : ' is-empty') + '">' +
+      escapeHtml(text || placeholder) +
+    '</span>' +
+  '</button>';
+}
+
+function profileContactItem(key, label, value) {
+  const text = String(value || '').trim();
+  return '<button type="button" class="profile-contact-item' + (text ? '' : ' is-empty') +
+    '" data-profile-edit="' + key + '" aria-label="Edit ' + escapeHtml(label) + '">' +
+    escapeHtml(text || 'Add ' + label.toLowerCase()) +
+  '</button>';
+}
+
+function renderProfileView() {
+  const host = $('#profileView');
+  if (!host) return;
+
+  const profile = state.profile;
+  const photo = profilePhoto();
+  const name = String(profile.name || '').trim();
+  const headline = String(profile.headline || '').trim();
+  const summary = String(profile.summary || '').trim();
+  const skills = Array.isArray(profile.skills) ? profile.skills.filter(Boolean) : [];
+  const resumeText = String(profile.resumeText || '').trim();
+  const excerpt = normalizeWhitespace(resumeText).replace(/\n+/g, ' ').slice(0, 300);
+  const resumeLabel = resumeText
+    ? (profile.resumeFileName || 'Pasted resume') + ' · ' + wordCount(resumeText) + ' words'
+    : 'No resume on file';
+
+  host.innerHTML =
+    '<div class="profile-sheet-head">' +
+      '<button type="button" class="profile-photo profile-photo-edit' + (photo ? ' has-photo' : '') +
+        '" data-profile-edit="photo" aria-label="Edit profile photo">' +
+        (photo ? '<img src="' + photo + '" alt="">' : escapeHtml(initials(name))) +
+      '</button>' +
+      '<div class="profile-sheet-identity">' +
+        '<button type="button" class="profile-read-name' + (name ? '' : ' is-empty') + '" data-profile-edit="name" aria-label="Edit name">' +
+          escapeHtml(name || 'Add your name') +
+        '</button>' +
+        '<button type="button" class="profile-read-headline' + (headline ? '' : ' is-empty') + '" data-profile-edit="headline" aria-label="Edit headline">' +
+          escapeHtml(headline || 'Add the role you want next') +
+        '</button>' +
+        '<div class="profile-sheet-contact">' +
+          profileContactItem('email', 'Email', profile.email) +
+          profileContactItem('phone', 'Phone', profile.phone) +
+          profileContactItem('location', 'Location', profile.location) +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="profile-sheet-section">' +
+      '<h3>Summary</h3>' +
+      '<button type="button" class="profile-read-block' + (summary ? '' : ' is-empty') + '" data-profile-edit="summary" aria-label="Edit summary">' +
+        escapeHtml(summary || 'Add a short summary of your focus, strengths, and the roles you want.') +
+      '</button>' +
+    '</div>' +
+
+    '<div class="profile-sheet-section">' +
+      '<h3>Skills</h3>' +
+      '<button type="button" class="profile-read-skills' + (skills.length ? '' : ' is-empty') + '" data-profile-edit="skills" aria-label="Edit skills">' +
+        (skills.length
+          ? skills.map((skill) => '<span class="profile-skill-chip">' + escapeHtml(skill) + '</span>').join('')
+          : 'Add skills') +
+      '</button>' +
+    '</div>' +
+
+    '<div class="profile-sheet-section">' +
+      '<h3>Links</h3>' +
+      '<div class="profile-read-grid">' +
+        profileViewField('linkedin', 'LinkedIn', profile.links.linkedin, 'Add LinkedIn') +
+        profileViewField('github', 'GitHub', profile.links.github, 'Add GitHub') +
+        profileViewField('website', 'Portfolio', profile.links.website, 'Add portfolio', 'span-2') +
+      '</div>' +
+    '</div>' +
+
+    '<div class="profile-sheet-section">' +
+      '<h3>Resume</h3>' +
+      '<button type="button" class="profile-read-resume' + (resumeText ? '' : ' is-empty') + '" data-profile-edit="resume" aria-label="Edit resume">' +
+        '<span class="profile-read-label">Base resume</span>' +
+        '<span class="profile-read-value' + (resumeText ? '' : ' is-empty') + '">' + escapeHtml(resumeLabel) + '</span>' +
+        '<span class="profile-resume-excerpt">' +
+          escapeHtml(resumeText
+            ? excerpt + (resumeText.length > 300 ? '…' : '')
+            : 'Upload or paste a resume so knomad can tailor it for each job.') +
+        '</span>' +
+      '</button>' +
+    '</div>';
+}
+
+function renderProfileMode() {
+  const form = $('#profileForm');
+  const view = $('#profileView');
+  const editBtn = $('#profileEditBtn');
+  if (!form || !view) return;
+
+  form.hidden = !profileEditing;
+  view.hidden = profileEditing;
+  if (editBtn) editBtn.hidden = profileEditing;
+  if (!profileEditing) renderProfileView();
+}
+
+function enterProfileEdit(field) {
+  if (!profileEditing) {
+    profileEditing = true;
+    profileEditSnapshot = normalizeProfile(JSON.parse(JSON.stringify(state.profile)));
+    applyProfileToForm();
+    renderProfileResumeMeta();
+    renderProfileMode();
+  }
+
+  const target = $(PROFILE_EDIT_TARGETS[field] || PROFILE_EDIT_TARGETS.name);
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function cancelProfileEdit(options = {}) {
+  if (profileEditSnapshot) {
+    const current = state.profile;
+    state.profile = normalizeProfile({
+      ...profileEditSnapshot,
+      photo: current.photo,
+      resumeFileKey: current.resumeFileKey
+    });
+    saveProfile();
+  }
+
+  profileEditing = false;
+  profileEditSnapshot = null;
+  applyProfileToForm();
+  renderProfileResumeMeta();
+  renderProfileMode();
+  if (!options.silent) toast('Changes discarded');
+}
+
 function applyProfileToForm() {
   const profile = state.profile;
   const set = (id, value) => {
@@ -1973,7 +2168,10 @@ function handleProfileSubmit(event) {
   profile.resumeText = $('#profileResumeText').value.trim();
 
   saveProfile();
+  profileEditing = false;
+  profileEditSnapshot = null;
   renderProfileResumeMeta();
+  renderProfileMode();
   toast('Profile saved');
 }
 
@@ -4932,6 +5130,8 @@ function resetAll() {
   state.applications = [];
   state.geminiKey = '';
   notifiedKeys = new Set();
+  profileEditing = false;
+  profileEditSnapshot = null;
   currentDetailId = null;
   renderedApplicationId = null;
   applicationTab = 'overview';
@@ -4950,6 +5150,572 @@ function resetAll() {
   applyProfileToForm();
   showPage('dashboard');
   toast(cloudReady() ? 'All local and cloud data erased' : 'All local data erased');
+}
+
+// ---------------------------------------------------------------- Friends & shared inbox
+
+let socialInFlight = false;
+let socialSeenInbox = null;
+let socialGeneration = 0;
+let shareJobDraft = { jobDescription: '' };
+
+function resetSocial() {
+  socialInFlight = false;
+  socialSeenInbox = null;
+  socialGeneration += 1;
+  state.social = {
+    status: 'off',
+    error: '',
+    friends: [],
+    incoming: [],
+    outgoing: [],
+    inbox: [],
+    sent: [],
+    unread: 0
+  };
+  renderFriendsBadge();
+  if (currentPage === 'friends') renderFriends();
+}
+
+function socialList(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function renderFriendsBadge() {
+  const badge = $('#friendsBadge');
+  if (!badge) return;
+  const count = Number(state.social.unread) || 0;
+  badge.textContent = count > 9 ? '9+' : String(count);
+  badge.hidden = !cloudReady() || count === 0;
+}
+
+/**
+ * Pull the friend list, pending requests, and both sides of the shared inbox in
+ * one snapshot. Quiet refreshes happen on the normal 30-second poll; a new
+ * unread share raises one toast instead of repainting the page.
+ */
+async function loadSocial(options = {}) {
+  const silent = Boolean(options.silent);
+  if (!cloudReady()) {
+    renderFriendsBadge();
+    renderFriends();
+    return;
+  }
+  if (socialInFlight) return;
+  socialInFlight = true;
+  const generation = socialGeneration;
+
+  if (!silent && state.social.status !== 'ready') {
+    state.social.status = 'loading';
+    renderFriends();
+  }
+
+  try {
+    const data = await api('/social');
+    if (generation !== socialGeneration) return;
+    const inbox = socialList(data && data.inbox);
+    const ids = inbox.map((item) => item.id);
+
+    if (socialSeenInbox) {
+      const fresh = inbox.filter((item) => !item.readAt && !socialSeenInbox.has(item.id));
+      if (fresh.length) {
+        const from = (fresh[0].from && fresh[0].from.name) || 'A friend';
+        toast(fresh.length === 1 ? from + ' sent you a job' : from + ' sent you ' + fresh.length + ' jobs');
+      }
+    }
+    socialSeenInbox = new Set(ids);
+
+    state.social = {
+      status: 'ready',
+      error: '',
+      friends: socialList(data && data.friends),
+      incoming: socialList(data && data.incoming),
+      outgoing: socialList(data && data.outgoing),
+      inbox,
+      sent: socialList(data && data.sent),
+      unread: Number(data && data.unread) || inbox.filter((item) => !item.readAt).length
+    };
+
+    renderFriendsBadge();
+    renderFriends();
+  } catch (err) {
+    if (generation !== socialGeneration) return;
+    state.social.status = 'error';
+    state.social.error = err.message || 'Could not load friends';
+    if (!silent) renderFriends();
+  } finally {
+    socialInFlight = false;
+  }
+}
+
+function renderFriends() {
+  const configured = cloudConfig.configured;
+  const signedIn = Boolean(state.cloud.user);
+
+  const signedOut = $('#friendsSignedOut');
+  const signedInPanel = $('#friendsSignedIn');
+  const actions = $('#friendsHeadActions');
+  if (signedOut) signedOut.hidden = !configured || signedIn;
+  if (signedInPanel) signedInPanel.hidden = !signedIn;
+  if (actions) actions.hidden = !signedIn;
+
+  if (!configured && signedOut) {
+    const copy = signedOut.querySelector('p');
+    if (copy) copy.textContent = 'This build has no Neon Auth or sync Function URL, so friends cannot be added yet.';
+  }
+
+  const summary = $('#friendsSummary');
+  if (summary) {
+    if (!configured) {
+      summary.textContent = 'Cloud sync is not configured in this build';
+    } else if (!signedIn) {
+      summary.textContent = 'Sign in to add friends and share jobs';
+    } else if (state.social.status === 'error') {
+      summary.textContent = state.social.error;
+    } else if (state.social.status === 'loading' || state.social.status === 'off') {
+      summary.textContent = 'Loading your friends…';
+    } else {
+      const count = state.social.friends.length;
+      summary.textContent = count + (count === 1 ? ' friend' : ' friends') +
+        ' · ' + (state.social.unread || 0) + ' unread';
+    }
+  }
+
+  renderFriendsBadge();
+  if (!signedIn) return;
+
+  renderFriendRequests();
+  renderFriendList();
+  renderSharedInbox();
+  renderSentShares();
+}
+
+function socialAvatar(user) {
+  const name = (user && (user.name || user.email)) || '?';
+  return '<span class="social-avatar" aria-hidden="true">' + escapeHtml(initials(name)) + '</span>';
+}
+
+function socialPersonName(user) {
+  return (user && (user.name || user.email)) || 'Knomad user';
+}
+
+function renderFriendRequests() {
+  const card = $('#friendRequestsCard');
+  const host = $('#friendRequests');
+  if (!card || !host) return;
+
+  const incoming = state.social.incoming || [];
+  const outgoing = state.social.outgoing || [];
+  const total = incoming.length + outgoing.length;
+  card.hidden = total === 0;
+
+  const count = $('#requestCount');
+  if (count) count.textContent = total ? total + ' pending' : '';
+  if (!total) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = [
+    ...incoming.map((request) => (
+      '<div class="social-person">' +
+        socialAvatar(request.from) +
+        '<div class="social-person-main">' +
+          '<strong>' + escapeHtml(socialPersonName(request.from)) + '</strong>' +
+          '<span>Wants to be friends</span>' +
+        '</div>' +
+        '<div class="social-person-actions">' +
+          '<button class="btn primary small" type="button" data-accept-request="' + escapeHtml(request.id) + '">Accept</button>' +
+          '<button class="btn ghost small" type="button" data-decline-request="' + escapeHtml(request.id) + '">Decline</button>' +
+        '</div>' +
+      '</div>'
+    )),
+    ...outgoing.map((request) => (
+      '<div class="social-person">' +
+        socialAvatar(request.to) +
+        '<div class="social-person-main">' +
+          '<strong>' + escapeHtml(socialPersonName(request.to)) + '</strong>' +
+          '<span>Request sent · waiting for them</span>' +
+        '</div>' +
+        '<div class="social-person-actions">' +
+          '<button class="btn ghost small" type="button" data-cancel-request="' + escapeHtml(request.id) + '">Cancel</button>' +
+        '</div>' +
+      '</div>'
+    ))
+  ].join('');
+}
+
+function renderFriendList() {
+  const host = $('#friendList');
+  if (!host) return;
+
+  const friends = state.social.friends || [];
+  const count = $('#friendCount');
+  if (count) count.textContent = friends.length ? friends.length + ' total' : '';
+
+  if (!friends.length) {
+    host.innerHTML = '<div class="social-empty">No friends yet. Send a request by email above; once they accept, you can swap job leads here.</div>';
+    return;
+  }
+
+  host.innerHTML = friends.map((friend) => {
+    const detail = friend.headline || friend.email || 'Knomad member';
+    return '<div class="social-person">' +
+      socialAvatar(friend) +
+      '<div class="social-person-main">' +
+        '<strong>' + escapeHtml(socialPersonName(friend)) + '</strong>' +
+        '<span title="' + escapeHtml(friend.email || '') + '">' + escapeHtml(detail) + '</span>' +
+      '</div>' +
+      '<div class="social-person-actions">' +
+        '<button class="btn ghost small" type="button" data-send-to="' + escapeHtml(friend.id) + '">Send job</button>' +
+        '<button class="btn quiet-danger small" type="button" data-remove-friend="' + escapeHtml(friend.id) + '">Remove</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function shareRoleHtml(share) {
+  const company = share.company || 'Untitled role';
+  const position = share.position || '';
+  return position
+    ? escapeHtml(position) + ' <span>at ' + escapeHtml(company) + '</span>'
+    : escapeHtml(company);
+}
+
+function renderSharedInbox() {
+  const host = $('#sharedInbox');
+  if (!host) return;
+
+  const inbox = state.social.inbox || [];
+  const count = $('#inboxCount');
+  if (count) {
+    const unread = inbox.filter((item) => !item.readAt).length;
+    count.textContent = inbox.length
+      ? unread + ' unread · ' + inbox.length + ' total'
+      : 'Empty';
+  }
+
+  if (!inbox.length) {
+    host.innerHTML = '<div class="social-empty">Nothing here yet. When a friend sends you a role it lands in this inbox, with their note and a one-click track button.</div>';
+    return;
+  }
+
+  host.innerHTML = inbox.map((share) => {
+    const unread = !share.readAt;
+    const from = socialPersonName(share.from);
+    const note = share.note
+      ? '<p class="share-note">' + escapeHtml(share.note) + '</p>'
+      : '';
+    const open = share.url
+      ? '<a class="btn ghost small" href="' + escapeHtml(share.url) + '" target="_blank" rel="noopener noreferrer" data-share-link="' + escapeHtml(share.id) + '">Open posting</a>'
+      : '';
+    const read = unread
+      ? '<button class="btn ghost small" type="button" data-share-read="' + escapeHtml(share.id) + '">Mark read</button>'
+      : '';
+
+    return '<article class="share-item' + (unread ? ' unread' : '') + '">' +
+      '<div class="share-head">' +
+        socialAvatar(share.from) +
+        '<div class="share-body">' +
+          '<p class="share-role">' + shareRoleHtml(share) + '</p>' +
+          '<p class="share-meta">' +
+            (unread ? '<span class="unread-dot" aria-hidden="true"></span>' : '') +
+            '<span>From ' + escapeHtml(from) + '</span>' +
+            '<span>·</span>' +
+            '<span>' + escapeHtml(relativeDay(share.createdAt)) + '</span>' +
+            (share.status === 'saved' ? '<span>· Saved</span>' : '') +
+          '</p>' +
+          note +
+        '</div>' +
+      '</div>' +
+      '<div class="share-actions">' +
+        open +
+        '<button class="btn subtle small" type="button" data-share-track="' + escapeHtml(share.id) + '">Track job</button>' +
+        read +
+        '<button class="btn quiet-danger small" type="button" data-share-dismiss="' + escapeHtml(share.id) + '">Dismiss</button>' +
+      '</div>' +
+    '</article>';
+  }).join('');
+}
+
+function renderSentShares() {
+  const card = $('#sentCard');
+  const host = $('#sentList');
+  if (!card || !host) return;
+
+  const sent = state.social.sent || [];
+  card.hidden = sent.length === 0;
+
+  const count = $('#sentCount');
+  if (count) count.textContent = sent.length ? sent.length + ' total' : '';
+  if (!sent.length) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = sent.map((share) => {
+    const to = socialPersonName(share.to);
+    const note = share.note
+      ? '<p class="share-note">' + escapeHtml(share.note) + '</p>'
+      : '';
+    return '<article class="share-item">' +
+      '<div class="share-head">' +
+        socialAvatar(share.to) +
+        '<div class="share-body">' +
+          '<p class="share-role">' + shareRoleHtml(share) + '</p>' +
+          '<p class="share-meta">' +
+            '<span>To ' + escapeHtml(to) + '</span>' +
+            '<span>·</span>' +
+            '<span>' + escapeHtml(relativeDay(share.createdAt)) + '</span>' +
+            (share.status === 'dismissed' ? '<span>· Dismissed</span>' : '') +
+          '</p>' +
+          note +
+        '</div>' +
+      '</div>' +
+      '<div class="share-actions">' +
+        (share.url
+          ? '<a class="btn ghost small" href="' + escapeHtml(share.url) + '" target="_blank" rel="noopener noreferrer">Open posting</a>'
+          : '') +
+        '<button class="btn quiet-danger small" type="button" data-delete-sent="' + escapeHtml(share.id) + '">Remove</button>' +
+      '</div>' +
+    '</article>';
+  }).join('');
+}
+
+async function handleFriendRequest(event) {
+  event.preventDefault();
+  const input = $('#friendEmail');
+  const button = $('#friendRequestBtn');
+  const email = input ? input.value.trim() : '';
+  if (!email) return;
+
+  if (button) button.disabled = true;
+  try {
+    const data = await api('/friends/request', { method: 'POST', body: { email } });
+    if (input) input.value = '';
+    toast(data && data.status === 'accepted' ? 'You are now friends' : 'Friend request sent');
+    await loadSocial({ silent: true });
+  } catch (err) {
+    toast(err.message || 'Could not send that request', 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function respondToFriendRequest(requestId, action) {
+  try {
+    await api('/friends/respond', { method: 'POST', body: { requestId, action } });
+    toast(action === 'accept' ? 'Friend added' : 'Request declined');
+    await loadSocial({ silent: true });
+  } catch (err) {
+    toast(err.message || 'Could not update that request', 'error');
+  }
+}
+
+async function cancelFriendRequest(requestId) {
+  try {
+    await api('/friends/requests/' + encodeURIComponent(requestId), { method: 'DELETE' });
+    toast('Request cancelled');
+    await loadSocial({ silent: true });
+  } catch (err) {
+    toast(err.message || 'Could not cancel that request', 'error');
+  }
+}
+
+async function removeFriend(friendId) {
+  const friend = (state.social.friends || []).find((entry) => entry.id === friendId);
+  const name = friend ? socialPersonName(friend) : 'this friend';
+  if (!confirm('Remove ' + name + ' from your friends? They will no longer be able to send you jobs.')) return;
+
+  try {
+    await api('/friends/' + encodeURIComponent(friendId), { method: 'DELETE' });
+    toast('Friend removed');
+    await loadSocial({ silent: true });
+  } catch (err) {
+    toast(err.message || 'Could not remove that friend', 'error');
+  }
+}
+
+function patchShareRead(shareId) {
+  const share = (state.social.inbox || []).find((entry) => entry.id === shareId);
+  if (!share || share.readAt) return;
+  share.readAt = new Date().toISOString();
+  state.social.unread = Math.max(0, (state.social.unread || 0) - 1);
+  renderFriendsBadge();
+  if (currentPage === 'friends') renderFriends();
+}
+
+async function markShareRead(shareId) {
+  patchShareRead(shareId);
+  try {
+    await api('/shares/' + encodeURIComponent(shareId) + '/read', { method: 'POST' });
+  } catch {
+    // Read state is cosmetic; the next snapshot will tell the truth.
+  }
+}
+
+async function markShareSaved(shareId) {
+  const share = (state.social.inbox || []).find((entry) => entry.id === shareId);
+  if (share) share.status = 'saved';
+  if (currentPage === 'friends') renderFriends();
+  try {
+    await api('/shares/' + encodeURIComponent(shareId) + '/saved', { method: 'POST' });
+  } catch {
+    // The saved flag is cosmetic; the next snapshot will tell the truth.
+  }
+}
+
+function trackSharedJob(shareId) {
+  const share = (state.social.inbox || []).find((entry) => entry.id === shareId);
+  if (!share) return;
+  markShareRead(shareId);
+  markShareSaved(shareId);
+  openAddJob({
+    url: share.url || '',
+    company: share.company || '',
+    position: share.position || '',
+    description: share.jobDescription || share.note || ''
+  });
+}
+
+async function dismissShare(shareId) {
+  try {
+    await api('/shares/' + encodeURIComponent(shareId), { method: 'DELETE' });
+    state.social.inbox = (state.social.inbox || []).filter((entry) => entry.id !== shareId);
+    state.social.unread = (state.social.inbox || []).filter((entry) => !entry.readAt).length;
+    renderFriendsBadge();
+    renderFriends();
+    toast('Job dismissed');
+  } catch (err) {
+    toast(err.message || 'Could not dismiss that job', 'error');
+  }
+}
+
+async function deleteSentShare(shareId) {
+  try {
+    await api('/shares/' + encodeURIComponent(shareId), { method: 'DELETE' });
+    state.social.sent = (state.social.sent || []).filter((entry) => entry.id !== shareId);
+    renderFriends();
+  } catch (err) {
+    toast(err.message || 'Could not remove that share', 'error');
+  }
+}
+
+async function openShareModal(prefill = {}) {
+  if (!cloudConfig.configured) {
+    toast('Cloud sync is not configured in this build', 'error');
+    return;
+  }
+  if (!state.cloud.user) {
+    toast('Sign in to send jobs to friends', 'error');
+    showPage('settings');
+    return;
+  }
+
+  if (!(state.social.friends || []).length && state.social.status !== 'ready') {
+    await loadSocial({ silent: true });
+  }
+
+  const friends = state.social.friends || [];
+  if (!friends.length) {
+    toast('Add a friend first, then send them a job', 'error');
+    showPage('friends');
+    return;
+  }
+
+  shareJobDraft = { jobDescription: String(prefill.jobDescription || '') };
+
+  const form = $('#shareJobForm');
+  if (form) form.reset();
+
+  const select = $('#shareFriend');
+  if (select) {
+    select.innerHTML = friends.map((friend) => {
+      const detail = friend.headline ? ' — ' + friend.headline : '';
+      return '<option value="' + escapeHtml(friend.id) + '">' +
+        escapeHtml(socialPersonName(friend) + detail) +
+        '</option>';
+    }).join('');
+    if (prefill.toUserId && friends.some((friend) => friend.id === prefill.toUserId)) {
+      select.value = prefill.toUserId;
+    }
+  }
+
+  const company = $('#shareCompany');
+  const position = $('#sharePosition');
+  const url = $('#shareUrl');
+  const note = $('#shareNote');
+  if (company) company.value = prefill.company || '';
+  if (position) position.value = prefill.position || '';
+  if (url) url.value = prefill.url || '';
+  if (note) note.value = prefill.note || '';
+
+  const error = $('#shareJobError');
+  if (error) {
+    error.textContent = '';
+    error.hidden = true;
+  }
+
+  openModal($('#shareJobModal'));
+  if (company) setTimeout(() => company.focus(), 60);
+}
+
+async function handleShareJobSubmit(event) {
+  event.preventDefault();
+
+  const error = $('#shareJobError');
+  const submit = $('#shareJobSubmit');
+  const select = $('#shareFriend');
+  const toUserId = select ? select.value : '';
+  const company = (($('#shareCompany') || {}).value || '').trim();
+  const position = (($('#sharePosition') || {}).value || '').trim();
+  const url = (($('#shareUrl') || {}).value || '').trim();
+  const note = (($('#shareNote') || {}).value || '').trim();
+
+  const fail = (message) => {
+    if (error) {
+      error.textContent = message;
+      error.hidden = false;
+    }
+  };
+
+  if (!toUserId) return fail('Choose a friend first.');
+  if (!company && !position && !url) return fail('Add a company, a role, or a job link.');
+
+  if (submit) submit.disabled = true;
+  if (error) error.hidden = true;
+
+  try {
+    const data = await api('/shares', {
+      method: 'POST',
+      body: {
+        toUserId,
+        company,
+        position,
+        url,
+        note,
+        jobDescription: shareJobDraft.jobDescription
+      }
+    });
+    closeModal($('#shareJobModal'));
+    toast('Job sent to ' + ((data && data.share && data.share.to && data.share.to.name) || 'your friend'));
+    await loadSocial({ silent: true });
+  } catch (err) {
+    fail(err.message || 'Could not send that job');
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
+function shareCurrentApplication() {
+  const application = currentApplication();
+  if (!application) return;
+  openShareModal({
+    company: application.company,
+    position: application.position,
+    url: application.url,
+    jobDescription: application.jobDescription
+  });
 }
 
 // ---------------------------------------------------------------- Events
@@ -4974,6 +5740,13 @@ function bindEvents() {
     if (trackJob) {
       event.preventDefault();
       trackSearchJob(trackJob.dataset.trackJob);
+      return;
+    }
+
+    const sendJob = event.target.closest('[data-send-job]');
+    if (sendJob) {
+      event.preventDefault();
+      sendSearchJob(sendJob.dataset.sendJob);
       return;
     }
 
@@ -5014,6 +5787,75 @@ function bindEvents() {
     if (practiceAction) {
       event.preventDefault();
       handlePracticeAction(practiceAction.dataset.practice);
+      return;
+    }
+
+    const acceptRequest = event.target.closest('[data-accept-request]');
+    if (acceptRequest) {
+      event.preventDefault();
+      respondToFriendRequest(acceptRequest.dataset.acceptRequest, 'accept');
+      return;
+    }
+
+    const declineRequest = event.target.closest('[data-decline-request]');
+    if (declineRequest) {
+      event.preventDefault();
+      respondToFriendRequest(declineRequest.dataset.declineRequest, 'decline');
+      return;
+    }
+
+    const cancelRequest = event.target.closest('[data-cancel-request]');
+    if (cancelRequest) {
+      event.preventDefault();
+      cancelFriendRequest(cancelRequest.dataset.cancelRequest);
+      return;
+    }
+
+    const removeFriendBtn = event.target.closest('[data-remove-friend]');
+    if (removeFriendBtn) {
+      event.preventDefault();
+      removeFriend(removeFriendBtn.dataset.removeFriend);
+      return;
+    }
+
+    const sendTo = event.target.closest('[data-send-to]');
+    if (sendTo) {
+      event.preventDefault();
+      openShareModal({ toUserId: sendTo.dataset.sendTo });
+      return;
+    }
+
+    const shareLink = event.target.closest('[data-share-link]');
+    if (shareLink) {
+      markShareRead(shareLink.dataset.shareLink);
+      return;
+    }
+
+    const shareRead = event.target.closest('[data-share-read]');
+    if (shareRead) {
+      event.preventDefault();
+      markShareRead(shareRead.dataset.shareRead);
+      return;
+    }
+
+    const shareTrack = event.target.closest('[data-share-track]');
+    if (shareTrack) {
+      event.preventDefault();
+      trackSharedJob(shareTrack.dataset.shareTrack);
+      return;
+    }
+
+    const shareDismiss = event.target.closest('[data-share-dismiss]');
+    if (shareDismiss) {
+      event.preventDefault();
+      dismissShare(shareDismiss.dataset.shareDismiss);
+      return;
+    }
+
+    const deleteSent = event.target.closest('[data-delete-sent]');
+    if (deleteSent) {
+      event.preventDefault();
+      deleteSentShare(deleteSent.dataset.deleteSent);
       return;
     }
 
@@ -5072,6 +5914,22 @@ function bindEvents() {
   const profileForm = $('#profileForm');
   if (profileForm) profileForm.addEventListener('submit', handleProfileSubmit);
 
+  const profileEditBtn = $('#profileEditBtn');
+  if (profileEditBtn) profileEditBtn.addEventListener('click', () => enterProfileEdit('name'));
+
+  const profileCancelBtn = $('#profileCancelBtn');
+  if (profileCancelBtn) profileCancelBtn.addEventListener('click', () => cancelProfileEdit());
+
+  const profileView = $('#profileView');
+  if (profileView) {
+    profileView.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-profile-edit]');
+      if (!target) return;
+      event.preventDefault();
+      enterProfileEdit(target.dataset.profileEdit);
+    });
+  }
+
   const photoBtn = $('#profilePhotoBtn');
   const photoInput = $('#profilePhotoFile');
   if (photoBtn && photoInput) {
@@ -5084,7 +5942,9 @@ function bindEvents() {
   }
 
   const photoRemove = $('#profilePhotoRemove');
-  if (photoRemove) photoRemove.addEventListener('click', clearProfilePhoto);const resumeText = $('#profileResumeText');
+  if (photoRemove) photoRemove.addEventListener('click', clearProfilePhoto);
+
+  const resumeText = $('#profileResumeText');
   if (resumeText) {
     resumeText.addEventListener('input', renderProfileResumeMeta);
   }
@@ -5267,6 +6127,21 @@ function bindEvents() {
     });
   }
 
+  const friendForm = $('#friendRequestForm');
+  if (friendForm) friendForm.addEventListener('submit', handleFriendRequest);
+
+  const shareForm = $('#shareJobForm');
+  if (shareForm) shareForm.addEventListener('submit', handleShareJobSubmit);
+
+  const friendsRefresh = $('#friendsRefreshBtn');
+  if (friendsRefresh) friendsRefresh.addEventListener('click', () => loadSocial());
+
+  const friendsSend = $('#friendsSendBtn');
+  if (friendsSend) friendsSend.addEventListener('click', () => openShareModal());
+
+  const shareApp = $('#shareAppBtn');
+  if (shareApp) shareApp.addEventListener('click', shareCurrentApplication);
+
   const resetBtn = $('#resetBtn');
   if (resetBtn) resetBtn.addEventListener('click', resetAll);
 }
@@ -5293,7 +6168,10 @@ function init() {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && cloudReady()) pullCloudDocs(false);
+    if (!document.hidden && cloudReady()) {
+      pullCloudDocs(false);
+      loadSocial({ silent: true });
+    }
   });
 }
 

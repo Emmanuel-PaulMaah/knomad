@@ -2,7 +2,7 @@
 
 A local-first job search workspace. Add a job posting, and knomad reads the page, tailors your resume to it, drafts interview prep, and files the whole thing in your application tracker.
 
-It works entirely offline on `localStorage`, and optionally syncs your profile, applications, and original resume files to Neon when you sign in. The Gemini API key always stays on the device.
+It works entirely offline on `localStorage`, and optionally syncs your profile, applications, original resume files, and the job leads you share with friends to Neon when you sign in. The Gemini API key always stays on the device.
 
 ## Neon backend
 
@@ -10,7 +10,7 @@ It works entirely offline on `localStorage`, and optionally syncs your profile, 
 
 | Service | Use |
 |---|---|
-| **Postgres** | `public.knomad_docs` — one row per profile/application document, scoped by `user_id` |
+| **Postgres** | `public.knomad_docs` — one row per profile/application document, scoped by `user_id`; plus friendships, friend requests, and shared job leads |
 | **Auth** | Managed Better Auth email/password sign-up and sign-in; the browser sends the session JWT to the Function |
 | **Functions** | `knomadsync` — Hono API that verifies the JWT, reads/writes documents, uploads files, proxies AI, and seals realtime queries |
 | **Object Storage** | Private `resumes` bucket for original uploaded resume files, reachable only through presigned URLs |
@@ -30,8 +30,9 @@ Sync rules:
 
 - **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus a 14-day activity chart, a status breakdown, your next scheduled events, recent activity, and a preview of your base resume.
 - **Job search** — type a role, and knomad queries three public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
+- **Friends & shared inbox** — add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in.
 - **One-click job intake** — the big **+** opens a flow that reads the job page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application.
-- **Profile** — name, photo, headline, contact details, links, summary, skills, and your base resume. The photo is cropped to a square, stored with the profile, and shown on the dashboard and top bar. Upload a resume file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
+- **Profile** — name, photo, headline, contact details, links, summary, skills, and your base resume. Saved details appear as a read-only profile sheet; click any detail (or **Edit profile**) to open the fields, then use **Save profile** to keep the changes or **Cancel** to discard them. The photo is cropped to a square, stored with the profile, and shown on the dashboard and top bar. Upload a resume file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
 - **Tracker** — search and filter applications, then open any one as a full application page with overview, resume, and interview-practice tabs.
 - **Application page** — status, notes, the job description used, scheduled interviews and reminders, a tailored resume preview, and interview practice in one place.
 - **Tailored resume document** — every generated resume is rendered as a styled document, with copy, print, and PDF download actions.
@@ -73,6 +74,22 @@ npm run test:search
 ```
 
 **Limitations.** The public feeds skew heavily toward US-only roles, and most Remote OK postings leave their location blank. A strict search can therefore return only a handful of verified roles. Eligibility is read from the posting's own metadata — always confirm the location on the job page before applying.
+
+## Friends & shared inbox
+
+Friends live in your knomad account, so this page needs you to be signed in.
+
+1. Open **Friends** and enter a friend's email. They need an existing knomad account.
+2. They see the request under **Requests** and choose **Accept** or **Decline**. If both people add each other at the same time, the second request completes the friendship instead of leaving two pending invites.
+3. Send a job in one of two ways:
+   - **Send a job** on the Friends page opens a short form: pick the friend, add a company, role, link, and note.
+   - **Send to friend** on any application page carries that application's company, role, link, and job description with it.
+   - **Send** on a job search result shares that lead before you track it yourself.
+4. The recipient sees it in **Shared inbox** with an unread count on the rail icon. They can **Open posting**, **Track job**, **Mark read**, or **Dismiss** it. **Track job** starts the normal Add job flow with the details prefilled.
+
+**Sent** keeps a record of what you shared. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
+
+The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Friends page. Unread counts and new-job toasts work from any page.
 
 ## One job, one flow
 
@@ -187,6 +204,7 @@ Add the app origins (`http://localhost:8000` and your production URL) as trusted
 5. Object Storage upload and presigned download.
 6. Realtime: sealed query + live change delivery.
 7. AI Gateway chat completion (reported as `blocked` when the account has no gateway credits).
+8. Friends: a second account requests, accepts, receives a shared job, marks it read, dismisses it, and the sender keeps the sent copy.
 
 Playwright remains available for browser tests.
 
@@ -200,7 +218,7 @@ knomad/
 ├── sync.js               # Browser Neon Auth + Function + Realtime clients
 ├── neon.ts               # Neon branch policy (auth, functions, bucket, gateway, realtime)
 ├── src/function/index.ts # knomadsync Hono API, JWT verification, Postgres/S3/AI/Realtime
-├── sql/schema.sql        # knomad_docs table
+├── sql/schema.sql        # knomad_docs, friendships, friend requests, shared jobs
 ├── scripts/setup-db.mjs  # Applies the schema
 ├── scripts/test-services.mjs # End-to-end service proof
 ├── scripts/test-job-search.mjs # Eligibility and role-matching tests
@@ -312,6 +330,8 @@ Stored under these `localStorage` keys:
 
 - The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`. It is never included in a synced document.
 - When you sign in, profile and application documents (and uploaded resume files) are sent to your Neon branch. Row access is scoped by the verified JWT subject.
+- Friendships, pending requests, and shared job leads are stored in the same branch and scoped to the signed-in user. A friend can see your account name, email, profile headline, and the jobs and notes you send them — nothing else from your workspace.
+- **Settings → Erase all local data** clears your workspace documents but does not remove friendships or shared jobs; remove friends individually on the Friends page if you want to disconnect.
 - Job URLs are sent to the reader services above when fetching a page.
 - **Settings → Export backup** writes a JSON file; **Erase all local data** removes local data and, when signed in, soft-deletes the cloud copies too.
 - Cloud sync is optional. Signing out leaves your local workspace intact.
@@ -331,6 +351,7 @@ Stored under these `localStorage` keys:
 - **Cloud sync is per document** — two devices editing the same application offline resolve by last write, not by field-level merge.
 - **AI Gateway needs credits** — auth and routing work on every plan, but model requests return `paid_plan_required` until the Neon org adds gateway credits.
 - **Realtime is best-effort** — reconnects and expired sealed queries fall back to the 30-second poll.
+- **Friends are invited by email** — there are no usernames, contact import, or group shares. The recipient must already have a knomad account.
 
 ## Possible next steps
 

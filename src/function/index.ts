@@ -8,6 +8,7 @@
  *   - AI Gateway  (NEON_AI_GATEWAY_*)     OpenAI-compatible chat completions
  *   - Realtime    (NEON_REALTIME_SECRET)  seals a user-scoped live query
  */
+import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { Pool } from "pg";
@@ -25,7 +26,7 @@ app.use(
     // Bearer tokens, not cookies: reflect the caller's origin. Auth still gates every route.
     origin: (origin) => origin || "*",
     allowHeaders: ["Authorization", "Content-Type"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
     maxAge: 86400,
   }),
 );
@@ -264,6 +265,230 @@ async function putDoc(userId: string, input: DocInput) {
   };
 }
 
+// ---------------------------------------------------------------- friends + shares
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type SocialUser = {
+  id: string;
+  name: string;
+  email: string;
+  image: string | null;
+  headline: string;
+};
+
+function cleanText(value: unknown, max: number): string {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function canonicalPair(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a];
+}
+
+function safeJobUrl(value: unknown): string {
+  const raw = cleanText(value, 2000);
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function fallbackUser(id: string): SocialUser {
+  return { id, name: "Knomad user", email: "", image: null, headline: "" };
+}
+
+/**
+ * Join account rows (name, email, avatar) with each person's synced profile so
+ * friends show the same name and headline they use inside knomad. Profile
+ * photos stay out of list responses on purpose: they are data URLs and would
+ * make every inbox refresh megabytes.
+ */
+async function loadUsers(ids: string[]): Promise<Map<string, SocialUser>> {
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  const map = new Map<string, SocialUser>();
+  if (!unique.length) return map;
+
+  const [accounts, profiles] = await Promise.all([
+    pool.query(
+      `select id::text as id, name, email, image
+         from neon_auth.user
+        where id::text = any($1::text[])`,
+      [unique],
+    ),
+    pool.query(
+      `select user_id, payload
+         from public.knomad_docs
+        where kind = 'profile'
+          and deleted_at is null
+          and user_id = any($1::text[])`,
+      [unique],
+    ),
+  ]);
+
+  const profileRows = new Map<string, Record<string, unknown>>();
+  profiles.rows.forEach((row: any) => {
+    profileRows.set(row.user_id, row.payload && typeof row.payload === "object" ? row.payload : {});
+  });
+
+  accounts.rows.forEach((row: any) => {
+    const profile = profileRows.get(row.id) || {};
+    const profileName = typeof profile.name === "string" ? profile.name.trim() : "";
+    map.set(row.id, {
+      id: row.id,
+      name: profileName || row.name || "Knomad user",
+      email: row.email || "",
+      image: row.image || null,
+      headline: typeof profile.headline === "string" ? profile.headline.trim() : "",
+    });
+  });
+
+  return map;
+}
+
+async function areFriends(a: string, b: string): Promise<boolean> {
+  const [userA, userB] = canonicalPair(a, b);
+  const result = await pool.query(
+    `select 1 from public.knomad_friendships where user_a = $1 and user_b = $2`,
+    [userA, userB],
+  );
+  return result.rowCount === 1;
+}
+
+async function addFriendship(a: string, b: string) {
+  const [userA, userB] = canonicalPair(a, b);
+  await pool.query(
+    `insert into public.knomad_friendships (user_a, user_b)
+     values ($1, $2)
+     on conflict do nothing`,
+    [userA, userB],
+  );
+}
+
+// Friend requests and shares are cheap writes, but they reach another person's
+// screen, so cap them per warm instance. Like the AI limiter, this is a speed
+// bump rather than a durable quota.
+const socialHits = new Map<string, number[]>();
+
+function enforceSocialRate(userId: string, bucket: string, max: number, windowMs: number) {
+  const key = bucket + ":" + userId;
+  const now = Date.now();
+  const recent = (socialHits.get(key) || []).filter((at) => now - at < windowMs);
+  if (recent.length >= max) {
+    throw new HttpError(429, "Too many requests. Try again in a little while.");
+  }
+  recent.push(now);
+  socialHits.set(key, recent);
+
+  if (socialHits.size > 2000) {
+    for (const [entry, hits] of socialHits) {
+      if (!hits.some((at) => now - at < windowMs)) socialHits.delete(entry);
+    }
+  }
+}
+
+async function socialSnapshot(userId: string) {
+  const [friends, incoming, outgoing, inbox, sent] = await Promise.all([
+    pool.query(
+      `select case when user_a = $1 then user_b else user_a end as friend_id,
+              created_at
+         from public.knomad_friendships
+        where user_a = $1 or user_b = $1
+        order by created_at desc`,
+      [userId],
+    ),
+    pool.query(
+      `select id::text as id, from_user, created_at
+         from public.knomad_friend_requests
+        where to_user = $1 and status = 'pending'
+        order by created_at desc`,
+      [userId],
+    ),
+    pool.query(
+      `select id::text as id, to_user, created_at
+         from public.knomad_friend_requests
+        where from_user = $1 and status = 'pending'
+        order by created_at desc`,
+      [userId],
+    ),
+    pool.query(
+      `select id::text as id, from_user, company, position, url, note,
+              job_description, status, created_at, read_at
+         from public.knomad_shares
+        where to_user = $1 and status <> 'dismissed'
+        order by created_at desc
+        limit 100`,
+      [userId],
+    ),
+    // A recipient dismissing a share hides it from their inbox, but the sender
+    // keeps the record of what they sent.
+    pool.query(
+      `select id::text as id, to_user, company, position, url, note,
+              status, created_at, read_at
+         from public.knomad_shares
+        where from_user = $1
+        order by created_at desc
+        limit 50`,
+      [userId],
+    ),
+  ]);
+
+  const ids: string[] = [];
+  friends.rows.forEach((row: any) => ids.push(row.friend_id));
+  incoming.rows.forEach((row: any) => ids.push(row.from_user));
+  outgoing.rows.forEach((row: any) => ids.push(row.to_user));
+  inbox.rows.forEach((row: any) => ids.push(row.from_user));
+  sent.rows.forEach((row: any) => ids.push(row.to_user));
+
+  const users = await loadUsers(ids);
+  const person = (id: string) => users.get(id) || fallbackUser(id);
+
+  const inboxItems = inbox.rows.map((row: any) => ({
+    id: row.id,
+    from: person(row.from_user),
+    company: row.company,
+    position: row.position,
+    url: row.url,
+    note: row.note,
+    jobDescription: row.job_description,
+    status: row.status,
+    createdAt: row.created_at,
+    readAt: row.read_at,
+  }));
+
+  return {
+    friends: friends.rows.map((row: any) => ({
+      ...person(row.friend_id),
+      friendsSince: row.created_at,
+    })),
+    incoming: incoming.rows.map((row: any) => ({
+      id: row.id,
+      from: person(row.from_user),
+      createdAt: row.created_at,
+    })),
+    outgoing: outgoing.rows.map((row: any) => ({
+      id: row.id,
+      to: person(row.to_user),
+      createdAt: row.created_at,
+    })),
+    inbox: inboxItems,
+    sent: sent.rows.map((row: any) => ({
+      id: row.id,
+      to: person(row.to_user),
+      company: row.company,
+      position: row.position,
+      url: row.url,
+      note: row.note,
+      status: row.status,
+      createdAt: row.created_at,
+      readAt: row.read_at,
+    })),
+    unread: inboxItems.filter((item) => !item.readAt).length,
+  };
+}
+
 // ---------------------------------------------------------------- routes
 
 app.get("/", (c) => c.text("knomad sync API"));
@@ -284,6 +509,246 @@ app.get("/health", (c) =>
 app.get("/me", async (c) => {
   const userId = await requireUser(c.req.header("authorization"));
   return c.json({ userId });
+});
+
+// ---------------------------------------------------------------- friends + shares
+
+app.get("/social", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  return c.json(await socialSnapshot(userId));
+});
+
+app.post("/friends/request", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+
+  const email = cleanText(body?.email, 320).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpError(400, "Enter a valid email address");
+  }
+
+  const target = await pool.query(
+    `select id::text as id, name
+       from neon_auth.user
+      where lower(email) = lower($1)
+      limit 1`,
+    [email],
+  );
+  if (!target.rowCount) throw new HttpError(404, "No knomad account uses that email address");
+
+  const targetId = target.rows[0].id as string;
+  if (targetId === userId) throw new HttpError(400, "That is your own account");
+  if (await areFriends(userId, targetId)) {
+    throw new HttpError(409, "You are already friends with " + target.rows[0].name);
+  }
+
+  // If the other person asked first, this request is the answer: accept it
+  // instead of leaving two pending requests that can never both resolve.
+  const reverse = await pool.query(
+    `update public.knomad_friend_requests
+        set status = 'accepted', responded_at = now()
+      where from_user = $1 and to_user = $2 and status = 'pending'
+      returning id`,
+    [targetId, userId],
+  );
+  if (reverse.rowCount) {
+    await addFriendship(userId, targetId);
+    return c.json({ status: "accepted", userId: targetId });
+  }
+
+  const existing = await pool.query(
+    `select id::text as id
+       from public.knomad_friend_requests
+      where from_user = $1 and to_user = $2 and status = 'pending'
+      limit 1`,
+    [userId, targetId],
+  );
+  if (existing.rowCount) {
+    return c.json({ status: "requested", id: existing.rows[0].id });
+  }
+
+  enforceSocialRate(userId, "friend-request", 40, 60 * 60_000);
+
+  const id = randomUUID();
+  await pool.query(
+    `insert into public.knomad_friend_requests (id, from_user, to_user)
+     values ($1, $2, $3)`,
+    [id, userId, targetId],
+  );
+  return c.json({ status: "requested", id });
+});
+
+app.post("/friends/respond", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const body = (await c.req.json().catch(() => ({}))) as {
+    requestId?: unknown;
+    action?: unknown;
+  };
+
+  const requestId = cleanText(body?.requestId, 64);
+  const action = body?.action === "accept" ? "accept" : body?.action === "decline" ? "decline" : "";
+  if (!UUID_PATTERN.test(requestId)) throw new HttpError(400, "requestId must be a UUID");
+  if (!action) throw new HttpError(400, "action must be 'accept' or 'decline'");
+
+  const updated = await pool.query(
+    `update public.knomad_friend_requests
+        set status = $3, responded_at = now()
+      where id = $1::uuid and to_user = $2 and status = 'pending'
+      returning from_user`,
+    [requestId, userId, action === "accept" ? "accepted" : "declined"],
+  );
+  if (!updated.rowCount) throw new HttpError(404, "That request is no longer pending");
+
+  if (action === "accept") await addFriendship(userId, updated.rows[0].from_user);
+  return c.json({ status: action === "accept" ? "accepted" : "declined" });
+});
+
+app.delete("/friends/requests/:id", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const requestId = c.req.param("id");
+  if (!UUID_PATTERN.test(requestId)) throw new HttpError(400, "Request id must be a UUID");
+
+  const cancelled = await pool.query(
+    `update public.knomad_friend_requests
+        set status = 'cancelled', responded_at = now()
+      where id = $1::uuid and from_user = $2 and status = 'pending'
+      returning id`,
+    [requestId, userId],
+  );
+  if (!cancelled.rowCount) throw new HttpError(404, "That request is no longer pending");
+  return c.json({ status: "cancelled" });
+});
+
+app.delete("/friends/:id", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const friendId = c.req.param("id");
+  if (!UUID_PATTERN.test(friendId)) throw new HttpError(400, "Friend id must be a UUID");
+
+  const [userA, userB] = canonicalPair(userId, friendId);
+  const removed = await pool.query(
+    `delete from public.knomad_friendships where user_a = $1 and user_b = $2`,
+    [userA, userB],
+  );
+  // Drop an unanswered request between the two as well, so removing someone
+  // does not leave a request that would silently re-friend them later.
+  await pool.query(
+    `delete from public.knomad_friend_requests
+      where status = 'pending'
+        and ((from_user = $1 and to_user = $2) or (from_user = $2 and to_user = $1))`,
+    [userId, friendId],
+  );
+
+  return c.json({ removed: removed.rowCount === 1 });
+});
+
+app.post("/shares", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const body = (await c.req.json().catch(() => ({}))) as {
+    toUserId?: unknown;
+    company?: unknown;
+    position?: unknown;
+    url?: unknown;
+    note?: unknown;
+    jobDescription?: unknown;
+  };
+
+  const toUserId = cleanText(body?.toUserId, 64);
+  if (!UUID_PATTERN.test(toUserId)) throw new HttpError(400, "toUserId must be a UUID");
+  if (toUserId === userId) throw new HttpError(400, "You cannot send a job to yourself");
+  if (!(await areFriends(userId, toUserId))) {
+    throw new HttpError(403, "You can only send jobs to friends");
+  }
+
+  const company = cleanText(body?.company, 240);
+  const position = cleanText(body?.position, 240);
+  const url = safeJobUrl(body?.url);
+  const note = cleanText(body?.note, 2000);
+  const jobDescription = cleanText(body?.jobDescription, 40_000);
+  if (!company && !position && !url) {
+    throw new HttpError(400, "Add a company, a role, or a job link");
+  }
+
+  enforceSocialRate(userId, "share", 120, 60 * 60_000);
+
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  await pool.query(
+    `insert into public.knomad_shares
+       (id, from_user, to_user, company, position, url, note, job_description)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, userId, toUserId, company, position, url, note, jobDescription],
+  );
+
+  const users = await loadUsers([toUserId]);
+  return c.json({
+    share: {
+      id,
+      to: users.get(toUserId) || fallbackUser(toUserId),
+      company,
+      position,
+      url,
+      note,
+      status: "inbox",
+      createdAt,
+      readAt: null,
+    },
+  });
+});
+
+app.post("/shares/:id/read", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const id = c.req.param("id");
+  if (!UUID_PATTERN.test(id)) throw new HttpError(400, "Share id must be a UUID");
+
+  await pool.query(
+    `update public.knomad_shares
+        set read_at = coalesce(read_at, now())
+      where id = $1::uuid and to_user = $2`,
+    [id, userId],
+  );
+  return c.json({ ok: true });
+});
+
+app.post("/shares/:id/saved", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const id = c.req.param("id");
+  if (!UUID_PATTERN.test(id)) throw new HttpError(400, "Share id must be a UUID");
+
+  await pool.query(
+    `update public.knomad_shares
+        set status = 'saved', read_at = coalesce(read_at, now())
+      where id = $1::uuid and to_user = $2`,
+    [id, userId],
+  );
+  return c.json({ ok: true });
+});
+
+app.delete("/shares/:id", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const id = c.req.param("id");
+  if (!UUID_PATTERN.test(id)) throw new HttpError(400, "Share id must be a UUID");
+
+  const share = await pool.query(
+    `select from_user, to_user
+       from public.knomad_shares
+      where id = $1::uuid and (from_user = $2 or to_user = $2)`,
+    [id, userId],
+  );
+  if (!share.rowCount) throw new HttpError(404, "That share no longer exists");
+
+  if (share.rows[0].to_user === userId) {
+    // The recipient dismisses it; the sender keeps the sent record.
+    await pool.query(
+      `update public.knomad_shares
+          set status = 'dismissed', read_at = coalesce(read_at, now())
+        where id = $1::uuid`,
+      [id],
+    );
+  } else {
+    await pool.query(`delete from public.knomad_shares where id = $1::uuid`, [id]);
+  }
+
+  return c.json({ ok: true });
 });
 
 app.get("/docs", async (c) => {

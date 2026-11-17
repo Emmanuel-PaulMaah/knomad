@@ -326,7 +326,117 @@ async function main() {
     }
   }
 
-  // 8. Clean up the E2E documents
+  // 8. Friends + shared inbox: request, accept, send, read, dismiss
+  {
+    const friendEmail = `knomad-e2e-friend-${Date.now()}@example.com`;
+    const friendPassword = "Knomad-E2E-Friend-12345!";
+
+    const signUp = await jsonFetch(authBase() + "/sign-up/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8000" },
+      body: JSON.stringify({ email: friendEmail, password: friendPassword, name: "Knomad Friend" }),
+    });
+
+    if (!signUp.response.ok) {
+      record("Friends", "fail", "friend sign-up failed: " + JSON.stringify(signUp.body));
+    } else {
+      const cookies = cookieHeader(signUp.response);
+      const token = await jsonFetch(authBase() + "/token", {
+        headers: { Origin: "http://localhost:8000", ...(cookies ? { Cookie: cookies } : {}) },
+      });
+      const friendJwt = token.body?.token || signUp.response.headers.get("set-auth-jwt") || "";
+      const friendHeaders = { Authorization: "Bearer " + friendJwt };
+      const friendMe = await jsonFetch(fn + "/me", { headers: friendHeaders });
+      const friendId = friendMe.body?.userId || "";
+
+      const requested = await jsonFetch(fn + "/friends/request", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ email: friendEmail }),
+      });
+
+      const friendSocial = await jsonFetch(fn + "/social", { headers: friendHeaders });
+      const requestId = friendSocial.body?.incoming?.[0]?.id || "";
+
+      const accepted = await jsonFetch(fn + "/friends/respond", {
+        method: "POST",
+        headers: { ...friendHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, action: "accept" }),
+      });
+
+      const shared = await jsonFetch(fn + "/shares", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toUserId: friendId,
+          company: "E2E Co",
+          position: "Test role",
+          url: "https://example.com/e2e",
+          note: "A job for you",
+          jobDescription: "E2E job description",
+        }),
+      });
+      const shareId = shared.body?.share?.id || "";
+
+      const received = await jsonFetch(fn + "/social", { headers: friendHeaders });
+      const inboxItem = received.body?.inbox?.[0] || null;
+
+      await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId) + "/read", {
+        method: "POST",
+        headers: friendHeaders,
+      });
+      const afterRead = await jsonFetch(fn + "/social", { headers: friendHeaders });
+
+      await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId), {
+        method: "DELETE",
+        headers: friendHeaders,
+      });
+      const afterDismiss = await jsonFetch(fn + "/social", { headers: friendHeaders });
+      const senderAfter = await jsonFetch(fn + "/social", { headers: authHeaders });
+
+      await jsonFetch(fn + "/friends/" + encodeURIComponent(friendId), {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId), {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+
+      const ok =
+        requested.response.ok &&
+        requested.body?.status === "requested" &&
+        friendSocial.body?.incoming?.some((item) => item.id === requestId) &&
+        accepted.body?.status === "accepted" &&
+        shared.response.ok &&
+        inboxItem?.company === "E2E Co" &&
+        inboxItem?.note === "A job for you" &&
+        received.body?.unread === 1 &&
+        afterRead.body?.unread === 0 &&
+        afterDismiss.body?.inbox?.length === 0 &&
+        senderAfter.body?.sent?.some((item) => item.id === shareId);
+
+      record(
+        "Friends + shared inbox",
+        ok ? "pass" : "fail",
+        ok
+          ? "requested, accepted, shared a job, marked it read, dismissed it for the recipient, and kept the sender's copy"
+          : JSON.stringify({
+              requested: requested.body,
+              incoming: friendSocial.body?.incoming,
+              accepted: accepted.body,
+              shared: shared.body,
+              inboxItem,
+              unread: received.body?.unread,
+              afterRead: afterRead.body?.unread,
+              afterDismiss: afterDismiss.body?.inbox?.length,
+              senderSent: senderAfter.body?.sent?.length,
+            }),
+      );
+    }
+  }
+
+  // 9. Clean up the E2E documents
   {
     await jsonFetch(fn + "/docs/batch", {
       method: "POST",
