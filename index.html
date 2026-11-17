@@ -3101,7 +3101,7 @@
           <div class="page-head">
             <div>
               <p class="page-desc">Add people you trust, send them job leads, and keep every introduction in one shared inbox.</p>
-              <p class="label-mono" id="friendsSummary">Sign in to add friends</p>
+              <p class="label-mono" id="friendsSummary">Sign in to add kniggurs</p>
             </div>
             <div class="social-head-actions" id="friendsHeadActions" hidden>
               <button class="btn ghost small" id="friendsRefreshBtn" type="button">Refresh</button>
@@ -3110,7 +3110,7 @@
           </div>
 
           <div class="card empty-state" id="friendsSignedOut" hidden>
-            <p>Friends and the shared inbox live in your knomad account.</p>
+            <p>Kniggurs and the shared inbox live in your knomad account.</p>
             <button class="btn primary small" type="button" data-page-target="settings">Sign in or create an account</button>
           </div>
 
@@ -3127,13 +3127,13 @@
               <div class="stack">
                 <div class="card">
                   <div class="card-head">
-                    <h3>Add a friend</h3>
+                    <h3>Add a Kniggur</h3>
                     <span class="label-mono">By email</span>
                   </div>
                   <form id="friendRequestForm" class="field" autocomplete="off" style="margin-bottom: 8px;">
-                    <label class="sr-only" for="friendEmail">Friend's email</label>
+                    <label class="sr-only" for="friendEmail">Kniggur's email</label>
                     <div class="friend-add-row">
-                      <input type="email" id="friendEmail" placeholder="friend@example.com" required>
+                      <input type="email" id="friendEmail" placeholder="kniggur@example.com" required>
                       <button class="btn primary small" id="friendRequestBtn" type="submit">Send request</button>
                     </div>
                   </form>
@@ -3150,7 +3150,7 @@
 
                 <div class="card">
                   <div class="card-head">
-                    <h3>Friends</h3>
+                    <h3>Kniggurs</h3>
                     <span class="label-mono" id="friendCount"></span>
                   </div>
                   <div class="social-list" id="friendList"></div>
@@ -3518,7 +3518,7 @@
                 <option value="offer">Offer</option>
                 <option value="rejected">Rejected</option>
               </select>
-              <button class="btn ghost small" id="shareAppBtn" type="button">Send to friend</button>
+              <button class="btn ghost small" id="shareAppBtn" type="button">Send to kniggur</button>
               <button class="btn ghost small quiet-danger" id="deleteAppBtn" type="button">Delete</button>
             </div>
           </div>
@@ -3722,12 +3722,12 @@
       <button class="modal-x" data-close aria-label="Close">×</button>
 
       <p class="eyebrow">Shared inbox</p>
-      <h2 id="shareJobTitle">Send a job to a friend</h2>
+      <h2 id="shareJobTitle">Send a job to a kniggur</h2>
       <p class="modal-sub">They will see it in their shared inbox with your note attached, and can track it as an application in one click.</p>
 
       <form id="shareJobForm" autocomplete="off">
         <div class="field">
-          <label for="shareFriend">Friend</label>
+          <label for="shareFriend">Kniggur</label>
           <select id="shareFriend" required></select>
         </div>
 
