@@ -91,6 +91,8 @@ Friends live in your knomad account, so this page needs you to be signed in.
 
 The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Friends page. Unread counts and new-job toasts work from any page.
 
+Friend actions need a valid session token, not just a remembered account. If that token can no longer be minted, knomad clears the stale signed-in state and asks you to sign in again — Settings never keeps claiming you are synced while new requests are being rejected.
+
 ## One job, one flow
 
 1. Click the **+** on the dashboard (or **Add job** in the top bar).

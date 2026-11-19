@@ -2,10 +2,12 @@
 
 import {
   cloudConfig,
+  AuthRequiredError,
   signUpCloud,
   signInCloud,
   getCloudSession,
   signOutCloud,
+  forgetCloudSession,
   api,
   subscribeToDocs,
   closeRealtime,
@@ -75,7 +77,7 @@ const SKILL_WORDS = [
   'power bi', 'salesforce', 'seo', 'content marketing', 'product management',
   'project management', 'customer success', 'communication', 'leadership',
   'stakeholder management', 'a/b testing', 'analytics', 'photoshop', 'illustrator',
-  'copywriting', 'email marketing', 'paid media', 'crm'
+  'copywriting', 'email marketing', 'paid media', 'crm', 'marketing', 'seo'
 ];
 
 function loadJSON(key, fallback) {
@@ -270,6 +272,35 @@ function cloudReady() {
   return cloudConfig.configured && Boolean(state.cloud.user);
 }
 
+function isAuthRequired(err) {
+  return Boolean(err && (err instanceof AuthRequiredError || err.code === 'AUTH_REQUIRED'));
+}
+
+let clearingDeadSession = false;
+
+/**
+ * Better Auth can report a session after its cookie has stopped working
+ * (blocked third-party cookies, revoked session, cleared site data). When a
+ * token can no longer be minted, stop pretending this device is signed in,
+ * keep every local document, and point the person at Settings once.
+ */
+function handleAuthRequired() {
+  const message = 'Session expired. Sign in again.';
+  if (clearingDeadSession) return message;
+  clearingDeadSession = true;
+
+  stopCloudSync();
+  setAccountError(message);
+  renderSettings();
+  if (currentPage !== 'settings') showPage('settings');
+  toast(message, 'error');
+
+  forgetCloudSession()
+    .catch(() => {})
+    .finally(() => { clearingDeadSession = false; });
+  return message;
+}
+
 function cloudStorageKey(name) {
   const id = state.cloud.user && state.cloud.user.id;
   return id ? name + '_' + id : name;
@@ -351,6 +382,14 @@ async function flushCloudQueue() {
     // cursor (Realtime applies rows without moving it).
     await pullCloudDocs(true);
   } catch (err) {
+    if (isAuthRequired(err)) {
+      docs.forEach((doc) => {
+        const key = doc.kind + ':' + doc.docId;
+        if (!cloudQueue.has(key)) cloudQueue.set(key, doc);
+      });
+      handleAuthRequired();
+      return;
+    }
     docs.forEach((doc) => {
       const key = doc.kind + ':' + doc.docId;
       if (!cloudQueue.has(key)) cloudQueue.set(key, doc);
@@ -472,7 +511,8 @@ async function pullCloudDocs(full = false) {
     if (data && data.cursor) writeCursor(data.cursor);
     if (state.cloud.status !== 'error') setCloudStatus('synced');
   } catch (err) {
-    setCloudStatus('error', err.message);
+    if (isAuthRequired(err)) handleAuthRequired();
+    else setCloudStatus('error', err.message);
   } finally {
     cloudPullInFlight = false;
     if (cloudPullAgain) {
@@ -597,8 +637,12 @@ async function restoreCloudSession() {
     try {
       await startCloudSync(session);
     } catch (err) {
-      state.cloud.user = session.user;
-      setCloudStatus('error', err.message);
+      if (isAuthRequired(err)) {
+        handleAuthRequired();
+      } else {
+        state.cloud.user = session.user;
+        setCloudStatus('error', err.message);
+      }
     }
   }
   renderSettings();
@@ -663,7 +707,8 @@ async function handleCloudSignIn() {
     renderSettings();
     toast('Signed in — syncing this device');
   } catch (err) {
-    if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
     else setAccountError(err.message || 'Could not sign in.');
   } finally {
     setAccountBusy(false);
@@ -699,7 +744,8 @@ async function handleCloudSignUp() {
     }
     renderSettings();
   } catch (err) {
-    if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else if (state.cloud.user) setCloudStatus('error', err.message || 'Sync failed.');
     else setAccountError(err.message || 'Could not create account.');
   } finally {
     setAccountBusy(false);
@@ -729,7 +775,8 @@ async function handleCloudSyncNow() {
     await loadSocial({ silent: true });
     toast('Workspace synced');
   } catch (err) {
-    setAccountError(err.message);
+    if (isAuthRequired(err)) handleAuthRequired();
+    else setAccountError(err.message);
   } finally {
     setAccountBusy(false);
   }
@@ -5240,6 +5287,10 @@ async function loadSocial(options = {}) {
     renderFriends();
   } catch (err) {
     if (generation !== socialGeneration) return;
+    if (isAuthRequired(err)) {
+      handleAuthRequired();
+      return;
+    }
     state.social.status = 'error';
     state.social.error = err.message || 'Could not load friends';
     if (!silent) renderFriends();
@@ -5496,7 +5547,8 @@ async function handleFriendRequest(event) {
     toast(data && data.status === 'accepted' ? 'You are now friends' : 'Friend request sent');
     await loadSocial({ silent: true });
   } catch (err) {
-    toast(err.message || 'Could not send that request', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not send that request', 'error');
   } finally {
     if (button) button.disabled = false;
   }
@@ -5508,7 +5560,8 @@ async function respondToFriendRequest(requestId, action) {
     toast(action === 'accept' ? 'Friend added' : 'Request declined');
     await loadSocial({ silent: true });
   } catch (err) {
-    toast(err.message || 'Could not update that request', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not update that request', 'error');
   }
 }
 
@@ -5518,7 +5571,8 @@ async function cancelFriendRequest(requestId) {
     toast('Request cancelled');
     await loadSocial({ silent: true });
   } catch (err) {
-    toast(err.message || 'Could not cancel that request', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not cancel that request', 'error');
   }
 }
 
@@ -5532,7 +5586,8 @@ async function removeFriend(friendId) {
     toast('Friend removed');
     await loadSocial({ silent: true });
   } catch (err) {
-    toast(err.message || 'Could not remove that friend', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not remove that friend', 'error');
   }
 }
 
@@ -5587,7 +5642,8 @@ async function dismissShare(shareId) {
     renderFriends();
     toast('Job dismissed');
   } catch (err) {
-    toast(err.message || 'Could not dismiss that job', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not dismiss that job', 'error');
   }
 }
 
@@ -5597,7 +5653,8 @@ async function deleteSentShare(shareId) {
     state.social.sent = (state.social.sent || []).filter((entry) => entry.id !== shareId);
     renderFriends();
   } catch (err) {
-    toast(err.message || 'Could not remove that share', 'error');
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not remove that share', 'error');
   }
 }
 
@@ -5701,7 +5758,12 @@ async function handleShareJobSubmit(event) {
     toast('Job sent to ' + ((data && data.share && data.share.to && data.share.to.name) || 'your friend'));
     await loadSocial({ silent: true });
   } catch (err) {
-    fail(err.message || 'Could not send that job');
+    if (isAuthRequired(err)) {
+      closeModal($('#shareJobModal'));
+      handleAuthRequired();
+    } else {
+      fail(err.message || 'Could not send that job');
+    }
   } finally {
     if (submit) submit.disabled = false;
   }
