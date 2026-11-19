@@ -2400,6 +2400,53 @@
 
     .share-actions { padding-left: 46px; }
 
+    .share-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .share-tab {
+      appearance: none;
+      background: none;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      padding: 9px 8px 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .share-tab:hover { color: var(--text); }
+
+    .share-tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+
+    .share-tab-count {
+      min-width: 17px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 16px;
+      text-align: center;
+    }
+
+    .share-tab.active .share-tab-count {
+      background: var(--accent-soft);
+      color: var(--text);
+    }
+
     .share-thread-toggle { gap: 6px; }
 
     .share-thread-new {
@@ -3191,12 +3238,21 @@
 
           <div id="friendsSignedIn" hidden>
             <div class="social-grid">
-              <div class="card">
+              <div class="card" id="sharedCard">
                 <div class="card-head">
-                  <h3>Shared inbox</h3>
+                  <h3>Shared jobs</h3>
                   <span class="label-mono" id="inboxCount"></span>
                 </div>
-                <div class="social-list" id="sharedInbox"></div>
+                <div class="share-tabs" role="tablist" aria-label="Shared jobs">
+                  <button class="share-tab" type="button" role="tab" data-share-tab="inbox" aria-selected="true" aria-controls="sharedInbox">
+                    Inbox <span class="share-tab-count" id="inboxTabCount">0</span>
+                  </button>
+                  <button class="share-tab" type="button" role="tab" data-share-tab="sent" aria-selected="false" aria-controls="sentList">
+                    Sent <span class="share-tab-count" id="sentTabCount">0</span>
+                  </button>
+                </div>
+                <div class="social-list" id="sharedInbox" role="tabpanel"></div>
+                <div class="social-list" id="sentList" role="tabpanel" hidden></div>
               </div>
 
               <div class="stack">
@@ -3229,14 +3285,6 @@
                     <span class="label-mono" id="friendCount"></span>
                   </div>
                   <div class="social-list" id="friendList"></div>
-                </div>
-
-                <div class="card" id="sentCard" hidden>
-                  <div class="card-head">
-                    <h3>Sent</h3>
-                    <span class="label-mono" id="sentCount"></span>
-                  </div>
-                  <div class="social-list" id="sentList"></div>
                 </div>
               </div>
             </div>
