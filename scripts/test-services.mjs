@@ -392,7 +392,30 @@ async function main() {
         headers: friendHeaders,
       });
       const afterDismiss = await jsonFetch(fn + "/social", { headers: friendHeaders });
-      const senderAfter = await jsonFetch(fn + "/social", { headers: authHeaders });
+
+      // A reply revives the dismissed lead for the recipient and is unread for them.
+      const senderReply = await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId) + "/messages", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Still interested in this one?" }),
+      });
+      const revived = await jsonFetch(fn + "/social", { headers: friendHeaders });
+      const revivedItem = revived.body?.inbox?.find((item) => item.id === shareId) || null;
+
+      await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId) + "/messages/read", {
+        method: "POST",
+        headers: friendHeaders,
+      });
+      const afterMessageRead = await jsonFetch(fn + "/social", { headers: friendHeaders });
+      const readItem = afterMessageRead.body?.inbox?.find((item) => item.id === shareId) || null;
+
+      const friendReply = await jsonFetch(fn + "/shares/" + encodeURIComponent(shareId) + "/messages", {
+        method: "POST",
+        headers: { ...friendHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Yes, applying today." }),
+      });
+      const senderThread = await jsonFetch(fn + "/social", { headers: authHeaders });
+      const sentItem = senderThread.body?.sent?.find((item) => item.id === shareId) || null;
 
       await jsonFetch(fn + "/friends/" + encodeURIComponent(friendId), {
         method: "DELETE",
@@ -414,13 +437,25 @@ async function main() {
         received.body?.unread === 1 &&
         afterRead.body?.unread === 0 &&
         afterDismiss.body?.inbox?.length === 0 &&
-        senderAfter.body?.sent?.some((item) => item.id === shareId);
+        senderReply.response.ok &&
+        senderReply.body?.message?.mine === true &&
+        revivedItem?.messages?.length === 1 &&
+        revivedItem?.messages?.[0]?.mine === false &&
+        revivedItem?.messageUnread === 1 &&
+        revived.body?.unreadMessages === 1 &&
+        readItem?.messageUnread === 0 &&
+        afterMessageRead.body?.unreadMessages === 0 &&
+        friendReply.response.ok &&
+        sentItem?.messages?.length === 2 &&
+        sentItem?.messages?.[1]?.mine === false &&
+        sentItem?.messageUnread === 1 &&
+        senderThread.body?.unreadMessages === 1;
 
       record(
         "Friends + shared inbox",
         ok ? "pass" : "fail",
         ok
-          ? "requested, accepted, shared a job, marked it read, dismissed it for the recipient, and kept the sender's copy"
+          ? "requested, accepted, shared a job, marked it read, dismissed it, then revived it with a reply and exchanged messages both ways"
           : JSON.stringify({
               requested: requested.body,
               incoming: friendSocial.body?.incoming,
@@ -430,7 +465,21 @@ async function main() {
               unread: received.body?.unread,
               afterRead: afterRead.body?.unread,
               afterDismiss: afterDismiss.body?.inbox?.length,
-              senderSent: senderAfter.body?.sent?.length,
+              senderReply: senderReply.body,
+              revivedItem: revivedItem && {
+                status: revivedItem.status,
+                messages: revivedItem.messages?.length,
+                messageUnread: revivedItem.messageUnread,
+              },
+              revivedUnreadMessages: revived.body?.unreadMessages,
+              readMessageUnread: readItem?.messageUnread,
+              afterMessageRead: afterMessageRead.body?.unreadMessages,
+              friendReply: friendReply.body,
+              sentItem: sentItem && {
+                messages: sentItem.messages?.length,
+                messageUnread: sentItem.messageUnread,
+              },
+              senderUnreadMessages: senderThread.body?.unreadMessages,
             }),
       );
     }

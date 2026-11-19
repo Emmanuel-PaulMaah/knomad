@@ -235,7 +235,8 @@ const state = {
     outgoing: [],
     inbox: [],
     sent: [],
-    unread: 0
+    unread: 0,
+    unreadMessages: 0
   }
 };
 
@@ -5203,13 +5204,19 @@ function resetAll() {
 
 let socialInFlight = false;
 let socialSeenInbox = null;
+let socialSeenMessages = null;
 let socialGeneration = 0;
 let shareJobDraft = { jobDescription: '' };
+const openShareThreads = new Set();
+const shareReplyDrafts = new Map();
 
 function resetSocial() {
   socialInFlight = false;
   socialSeenInbox = null;
+  socialSeenMessages = null;
   socialGeneration += 1;
+  openShareThreads.clear();
+  shareReplyDrafts.clear();
   state.social = {
     status: 'off',
     error: '',
@@ -5218,7 +5225,8 @@ function resetSocial() {
     outgoing: [],
     inbox: [],
     sent: [],
-    unread: 0
+    unread: 0,
+    unreadMessages: 0
   };
   renderFriendsBadge();
   if (currentPage === 'friends') renderFriends();
@@ -5228,10 +5236,23 @@ function socialList(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function socialUnreadTotal() {
+  return (Number(state.social.unread) || 0) + (Number(state.social.unreadMessages) || 0);
+}
+
+function socialThreadFocused() {
+  if (currentPage !== 'friends') return false;
+  const active = document.activeElement;
+  if (!active || !active.matches('[data-share-reply-input]')) return false;
+  // Only protect a reply that actually contains text; an empty, focused box can
+  // be repainted so new messages still show up.
+  return Boolean(active.value && active.value.trim());
+}
+
 function renderFriendsBadge() {
   const badge = $('#friendsBadge');
   if (!badge) return;
-  const count = Number(state.social.unread) || 0;
+  const count = socialUnreadTotal();
   badge.textContent = count > 9 ? '9+' : String(count);
   badge.hidden = !cloudReady() || count === 0;
 }
@@ -5261,6 +5282,7 @@ async function loadSocial(options = {}) {
     const data = await api('/social');
     if (generation !== socialGeneration) return;
     const inbox = socialList(data && data.inbox);
+    const sent = socialList(data && data.sent);
     const ids = inbox.map((item) => item.id);
 
     if (socialSeenInbox) {
@@ -5272,6 +5294,32 @@ async function loadSocial(options = {}) {
     }
     socialSeenInbox = new Set(ids);
 
+    // One toast per refresh for new replies, on either side of the thread.
+    const messageEvents = [];
+    inbox.forEach((share) => {
+      socialList(share.messages).forEach((message) => {
+        if (!message.mine) messageEvents.push({ message, share, author: share.from });
+      });
+    });
+    sent.forEach((share) => {
+      socialList(share.messages).forEach((message) => {
+        if (!message.mine) messageEvents.push({ message, share, author: share.to });
+      });
+    });
+
+    if (socialSeenMessages) {
+      const freshReplies = messageEvents.filter((entry) => !socialSeenMessages.has(entry.message.id));
+      if (freshReplies.length) {
+        const first = freshReplies[0];
+        const who = socialPersonName(first.author);
+        const what = first.share.company || first.share.position || 'a job';
+        toast(freshReplies.length === 1
+          ? who + ' replied about ' + what
+          : who + ' sent ' + freshReplies.length + ' replies about ' + what);
+      }
+    }
+    socialSeenMessages = new Set(messageEvents.map((entry) => entry.message.id));
+
     state.social = {
       status: 'ready',
       error: '',
@@ -5279,11 +5327,16 @@ async function loadSocial(options = {}) {
       incoming: socialList(data && data.incoming),
       outgoing: socialList(data && data.outgoing),
       inbox,
-      sent: socialList(data && data.sent),
-      unread: Number(data && data.unread) || inbox.filter((item) => !item.readAt).length
+      sent,
+      unread: Number(data && data.unread) || inbox.filter((item) => !item.readAt).length,
+      unreadMessages: Number(data && data.unreadMessages) ||
+        [...inbox, ...sent].reduce((total, item) => total + (Number(item.messageUnread) || 0), 0)
     };
 
     renderFriendsBadge();
+    // A silent poll must not repaint a reply the person is in the middle of
+    // typing; the next refresh carries the new data instead.
+    if (silent && socialThreadFocused()) return;
     renderFriends();
   } catch (err) {
     if (generation !== socialGeneration) return;
@@ -5328,7 +5381,7 @@ function renderFriends() {
     } else {
       const count = state.social.friends.length;
       summary.textContent = count + (count === 1 ? ' friend' : ' friends') +
-        ' · ' + (state.social.unread || 0) + ' unread';
+        ' · ' + socialUnreadTotal() + ' unread';
     }
   }
 
@@ -5433,6 +5486,53 @@ function shareRoleHtml(share) {
     : escapeHtml(company);
 }
 
+function shareThreadToggle(share) {
+  const open = openShareThreads.has(share.id);
+  const replies = socialList(share.messages).length;
+  const unread = Number(share.messageUnread) || 0;
+  const label = open ? 'Hide replies' : replies
+    ? (replies === 1 ? '1 reply' : replies + ' replies')
+    : 'Reply';
+
+  return '<button class="btn ghost small share-thread-toggle" type="button" data-share-thread="' +
+    escapeHtml(share.id) + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+    escapeHtml(label) +
+    (unread ? '<span class="share-thread-new">' + unread + ' new</span>' : '') +
+  '</button>';
+}
+
+function shareThreadHtml(share, friend) {
+  if (!openShareThreads.has(share.id)) return '';
+
+  const messages = socialList(share.messages);
+  const draft = shareReplyDrafts.get(share.id) || '';
+  const rows = messages.length
+    ? messages.map((message) => {
+        const unread = !message.mine && !message.readAt;
+        const author = message.mine ? 'You' : socialPersonName(friend);
+        return '<div class="share-message' + (message.mine ? ' mine' : '') + (unread ? ' unread' : '') + '">' +
+          '<div class="share-message-meta">' +
+            '<strong>' + escapeHtml(author) + '</strong>' +
+            '<span>' + escapeHtml(relativeDay(message.createdAt)) + '</span>' +
+            (unread ? '<span class="unread-dot" aria-hidden="true"></span>' : '') +
+          '</div>' +
+          '<p>' + escapeHtml(message.body) + '</p>' +
+        '</div>';
+      }).join('')
+    : '<p class="share-thread-empty">No replies yet. Say something about this lead.</p>';
+
+  return '<div class="share-thread">' +
+    '<div class="share-thread-list">' + rows + '</div>' +
+    '<form class="share-reply" data-share-reply="' + escapeHtml(share.id) + '">' +
+      '<textarea data-share-reply-input="' + escapeHtml(share.id) + '" rows="2" maxlength="2000" ' +
+        'placeholder="Reply about this job…" aria-label="Reply about this job">' +
+        escapeHtml(draft) +
+      '</textarea>' +
+      '<button class="btn primary small" type="submit">Send</button>' +
+    '</form>' +
+  '</div>';
+}
+
 function renderSharedInbox() {
   const host = $('#sharedInbox');
   if (!host) return;
@@ -5441,9 +5541,10 @@ function renderSharedInbox() {
   const count = $('#inboxCount');
   if (count) {
     const unread = inbox.filter((item) => !item.readAt).length;
-    count.textContent = inbox.length
-      ? unread + ' unread · ' + inbox.length + ' total'
-      : 'Empty';
+    const newReplies = inbox.reduce((total, item) => total + (Number(item.messageUnread) || 0), 0);
+    const parts = [unread + ' unread', inbox.length + ' total'];
+    if (newReplies) parts.push(newReplies + (newReplies === 1 ? ' new reply' : ' new replies'));
+    count.textContent = inbox.length ? parts.join(' · ') : 'Empty';
   }
 
   if (!inbox.length) {
@@ -5481,10 +5582,12 @@ function renderSharedInbox() {
       '</div>' +
       '<div class="share-actions">' +
         open +
+        shareThreadToggle(share) +
         '<button class="btn subtle small" type="button" data-share-track="' + escapeHtml(share.id) + '">Track job</button>' +
         read +
         '<button class="btn quiet-danger small" type="button" data-share-dismiss="' + escapeHtml(share.id) + '">Dismiss</button>' +
       '</div>' +
+      shareThreadHtml(share, share.from) +
     '</article>';
   }).join('');
 }
@@ -5527,8 +5630,10 @@ function renderSentShares() {
         (share.url
           ? '<a class="btn ghost small" href="' + escapeHtml(share.url) + '" target="_blank" rel="noopener noreferrer">Open posting</a>'
           : '') +
+        shareThreadToggle(share) +
         '<button class="btn quiet-danger small" type="button" data-delete-sent="' + escapeHtml(share.id) + '">Remove</button>' +
       '</div>' +
+      shareThreadHtml(share, share.to) +
     '</article>';
   }).join('');
 }
@@ -5655,6 +5760,109 @@ async function deleteSentShare(shareId) {
   } catch (err) {
     if (isAuthRequired(err)) handleAuthRequired();
     else toast(err.message || 'Could not remove that share', 'error');
+  }
+}
+
+function findShare(shareId) {
+  const all = [...(state.social.inbox || []), ...(state.social.sent || [])];
+  return all.find((entry) => entry.id === shareId) || null;
+}
+
+function recomputeUnreadMessages() {
+  const all = [...(state.social.inbox || []), ...(state.social.sent || [])];
+  state.social.unreadMessages = all.reduce(
+    (total, item) => total + socialList(item.messages).filter((message) => !message.mine && !message.readAt).length,
+    0
+  );
+  renderFriendsBadge();
+}
+
+function replyInputFor(shareId) {
+  const inputs = document.querySelectorAll('[data-share-reply-input]');
+  for (const input of inputs) {
+    if (input.dataset.shareReplyInput === shareId) return input;
+  }
+  return null;
+}
+
+/**
+ * Opening a thread counts as reading it. The local patch keeps the badge
+ * honest without waiting for the next snapshot; the POST makes it durable.
+ */
+function patchThreadRead(shareId) {
+  const share = findShare(shareId);
+  if (!share) return;
+  const now = new Date().toISOString();
+  socialList(share.messages).forEach((message) => {
+    if (!message.mine && !message.readAt) message.readAt = now;
+  });
+  share.messageUnread = 0;
+  recomputeUnreadMessages();
+}
+
+async function markThreadRead(shareId) {
+  try {
+    await api('/shares/' + encodeURIComponent(shareId) + '/messages/read', { method: 'POST' });
+  } catch {
+    // Read state is cosmetic; the next snapshot will tell the truth.
+  }
+}
+
+async function toggleShareThread(shareId) {
+  const opening = !openShareThreads.has(shareId);
+  if (opening) openShareThreads.add(shareId);
+  else openShareThreads.delete(shareId);
+
+  if (opening) patchThreadRead(shareId);
+  renderFriends();
+  if (!opening) return;
+
+  const input = replyInputFor(shareId);
+  if (input) input.focus();
+  await markThreadRead(shareId);
+}
+
+async function submitShareReply(form) {
+  const shareId = form.dataset.shareReply;
+  const input = form.querySelector('[data-share-reply-input]');
+  const text = input ? input.value.trim() : '';
+  if (!text) {
+    if (input) input.focus();
+    return;
+  }
+
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const data = await api('/shares/' + encodeURIComponent(shareId) + '/messages', {
+      method: 'POST',
+      body: { text }
+    });
+    const message = data && data.message;
+    shareReplyDrafts.delete(shareId);
+
+    const share = findShare(shareId);
+    if (share && message) {
+      // Posting marks the other person's side read, and a reply revives a
+      // lead the recipient had dismissed.
+      const now = message.createdAt || new Date().toISOString();
+      socialList(share.messages).forEach((entry) => {
+        if (!entry.mine && !entry.readAt) entry.readAt = now;
+      });
+      share.messages = [...socialList(share.messages), message];
+      share.messageUnread = 0;
+      if (share.status === 'dismissed') share.status = 'inbox';
+    }
+
+    recomputeUnreadMessages();
+    renderFriends();
+    const nextInput = replyInputFor(shareId);
+    if (nextInput) nextInput.focus();
+  } catch (err) {
+    if (isAuthRequired(err)) handleAuthRequired();
+    else toast(err.message || 'Could not send that reply', 'error');
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -5921,6 +6129,13 @@ function bindEvents() {
       return;
     }
 
+    const shareThread = event.target.closest('[data-share-thread]');
+    if (shareThread) {
+      event.preventDefault();
+      toggleShareThread(shareThread.dataset.shareThread);
+      return;
+    }
+
     const pageTarget = event.target.closest('[data-page-target]');
     if (pageTarget) {
       event.preventDefault();
@@ -5971,6 +6186,29 @@ function bindEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeTopModal();
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      const input = event.target.closest && event.target.closest('[data-share-reply-input]');
+      if (input) {
+        event.preventDefault();
+        const form = input.closest('[data-share-reply]');
+        if (form) submitShareReply(form);
+      }
+    }
+  });
+
+  // Reply drafts live in memory so a silent poll can repaint the thread without
+  // wiping what the person is still typing.
+  document.addEventListener('input', (event) => {
+    const input = event.target.closest && event.target.closest('[data-share-reply-input]');
+    if (!input) return;
+    shareReplyDrafts.set(input.dataset.shareReplyInput, input.value);
+  });
+
+  document.addEventListener('submit', (event) => {
+    const form = event.target.closest && event.target.closest('[data-share-reply]');
+    if (!form) return;
+    event.preventDefault();
+    submitShareReply(form);
   });
 
   const profileForm = $('#profileForm');

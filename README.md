@@ -30,7 +30,7 @@ Sync rules:
 
 - **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus a 14-day activity chart, a status breakdown, your next scheduled events, recent activity, and a preview of your base resume.
 - **Job search** — type a role, and knomad queries three public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
-- **Friends & shared inbox** — add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in.
+- **Friends & shared inbox** — add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in. Each shared job has a reply thread so you can talk about that lead.
 - **One-click job intake** — the big **+** opens a flow that reads the job page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application.
 - **Profile** — name, photo, headline, contact details, links, summary, skills, and your base resume. Saved details appear as a read-only profile sheet; click any detail (or **Edit profile**) to open the fields, then use **Save profile** to keep the changes or **Cancel** to discard them. The photo is cropped to a square, stored with the profile, and shown on the dashboard and top bar. Upload a resume file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
 - **Tracker** — search and filter applications, then open any one as a full application page with overview, resume, and interview-practice tabs.
@@ -86,10 +86,11 @@ Friends live in your knomad account, so this page needs you to be signed in.
    - **Send to friend** on any application page carries that application's company, role, link, and job description with it.
    - **Send** on a job search result shares that lead before you track it yourself.
 4. The recipient sees it in **Shared inbox** with an unread count on the rail icon. They can **Open posting**, **Track job**, **Mark read**, or **Dismiss** it. **Track job** starts the normal Add job flow with the details prefilled.
+5. **Reply** under any shared job opens a thread with that friend. Both people can post; the other side sees an unread badge on the thread and a toast from any page. Opening a thread marks the other person's replies read. Replying to a dismissed job brings it back to the recipient's inbox.
 
-**Sent** keeps a record of what you shared. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
+**Sent** keeps a record of what you shared, and each sent job has the same reply thread. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
 
-The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Friends page. Unread counts and new-job toasts work from any page.
+The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Friends page. Unread counts, reply notifications, and new-job toasts work from any page. A reply box you are actively typing in is left alone by the silent poll; drafts stay put until you send or close the thread.
 
 Friend actions need a valid session token, not just a remembered account. If that token can no longer be minted, knomad clears the stale signed-in state and asks you to sign in again — Settings never keeps claiming you are synced while new requests are being rejected.
 
@@ -206,7 +207,7 @@ Add the app origins (`http://localhost:8000` and your production URL) as trusted
 5. Object Storage upload and presigned download.
 6. Realtime: sealed query + live change delivery.
 7. AI Gateway chat completion (reported as `blocked` when the account has no gateway credits).
-8. Friends: a second account requests, accepts, receives a shared job, marks it read, dismisses it, and the sender keeps the sent copy.
+8. Friends: a second account requests, accepts, receives a shared job, marks it read, dismisses it, then revives it with a reply and exchanges messages both ways.
 
 Playwright remains available for browser tests.
 
@@ -332,7 +333,7 @@ Stored under these `localStorage` keys:
 
 - The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`. It is never included in a synced document.
 - When you sign in, profile and application documents (and uploaded resume files) are sent to your Neon branch. Row access is scoped by the verified JWT subject.
-- Friendships, pending requests, and shared job leads are stored in the same branch and scoped to the signed-in user. A friend can see your account name, email, profile headline, and the jobs and notes you send them — nothing else from your workspace.
+- Friendships, pending requests, shared job leads, and their reply threads are stored in the same branch and scoped to the signed-in user. A friend can see your account name, email, profile headline, and the jobs, notes, and replies you exchange with them — nothing else from your workspace. Only the two people on a share can read or post in its thread.
 - **Settings → Erase all local data** clears your workspace documents but does not remove friendships or shared jobs; remove friends individually on the Friends page if you want to disconnect.
 - Job URLs are sent to the reader services above when fetching a page.
 - **Settings → Export backup** writes a JSON file; **Erase all local data** removes local data and, when signed in, soft-deletes the cloud copies too.

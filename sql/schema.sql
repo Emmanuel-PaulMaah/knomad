@@ -105,3 +105,20 @@ create index if not exists knomad_shares_inbox_idx
 
 create index if not exists knomad_shares_sent_idx
   on public.knomad_shares (from_user, created_at desc);
+
+-- Replies under a shared job. Both the sender and the recipient can post; a
+-- message is unread for the other person until they open the thread.
+create table if not exists public.knomad_share_messages (
+  id         uuid        primary key default gen_random_uuid(),
+  share_id   uuid        not null references public.knomad_shares(id) on delete cascade,
+  author_id  text        not null,
+  body       text        not null,
+  created_at timestamptz not null default now(),
+  read_at    timestamptz
+);
+
+create index if not exists knomad_share_messages_thread_idx
+  on public.knomad_share_messages (share_id, created_at);
+
+create index if not exists knomad_share_messages_unread_idx
+  on public.knomad_share_messages (share_id, read_at);

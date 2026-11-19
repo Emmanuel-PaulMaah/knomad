@@ -458,6 +458,70 @@ async function socialSnapshot(userId: string) {
     readAt: row.read_at,
   }));
 
+  const sentItems = sent.rows.map((row: any) => ({
+    id: row.id,
+    to: person(row.to_user),
+    company: row.company,
+    position: row.position,
+    url: row.url,
+    note: row.note,
+    status: row.status,
+    createdAt: row.created_at,
+    readAt: row.read_at,
+  }));
+
+  // One query for every thread on the page. The window keeps a single share
+  // from ever making the snapshot unbounded; older replies stay in the DB.
+  const shareIds = [...inboxItems, ...sentItems].map((item) => item.id);
+  const messageRows = shareIds.length
+    ? (
+        await pool.query(
+          `select id::text as id, share_id::text as share_id, author_id,
+                  body, created_at, read_at
+             from (
+               select id, share_id, author_id, body, created_at, read_at,
+                      row_number() over (
+                        partition by share_id order by created_at desc
+                      ) as position
+                 from public.knomad_share_messages
+                where share_id = any($1::uuid[])
+             ) recent
+            where position <= 50
+            order by created_at asc, id asc`,
+          [shareIds],
+        )
+      ).rows
+    : [];
+
+  const threads = new Map<string, any[]>();
+  messageRows.forEach((row: any) => {
+    const message = {
+      id: row.id,
+      body: row.body,
+      authorId: row.author_id,
+      mine: row.author_id === userId,
+      createdAt: row.created_at,
+      readAt: row.read_at,
+    };
+    const thread = threads.get(row.share_id) || [];
+    thread.push(message);
+    threads.set(row.share_id, thread);
+  });
+
+  const withMessages = (item: any) => {
+    const messages = threads.get(item.id) || [];
+    return {
+      ...item,
+      messages,
+      messageUnread: messages.filter((message) => !message.mine && !message.readAt).length,
+    };
+  };
+
+  const inboxWithMessages = inboxItems.map(withMessages);
+  const sentWithMessages = sentItems.map(withMessages);
+  const unreadMessages = [...inboxWithMessages, ...sentWithMessages]
+    .reduce((total, item) => total + item.messageUnread, 0);
+
   return {
     friends: friends.rows.map((row: any) => ({
       ...person(row.friend_id),
@@ -473,19 +537,10 @@ async function socialSnapshot(userId: string) {
       to: person(row.to_user),
       createdAt: row.created_at,
     })),
-    inbox: inboxItems,
-    sent: sent.rows.map((row: any) => ({
-      id: row.id,
-      to: person(row.to_user),
-      company: row.company,
-      position: row.position,
-      url: row.url,
-      note: row.note,
-      status: row.status,
-      createdAt: row.created_at,
-      readAt: row.read_at,
-    })),
-    unread: inboxItems.filter((item) => !item.readAt).length,
+    inbox: inboxWithMessages,
+    sent: sentWithMessages,
+    unread: inboxWithMessages.filter((item) => !item.readAt).length,
+    unreadMessages,
   };
 }
 
@@ -718,6 +773,82 @@ app.post("/shares/:id/saved", async (c) => {
     `update public.knomad_shares
         set status = 'saved', read_at = coalesce(read_at, now())
       where id = $1::uuid and to_user = $2`,
+    [id, userId],
+  );
+  return c.json({ ok: true });
+});
+
+app.post("/shares/:id/messages", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const id = c.req.param("id");
+  if (!UUID_PATTERN.test(id)) throw new HttpError(400, "Share id must be a UUID");
+
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; body?: unknown };
+  const text = cleanText(body?.text ?? body?.body, 2000);
+  if (!text) throw new HttpError(400, "Write a reply first");
+
+  const share = await pool.query(
+    `select 1
+       from public.knomad_shares
+      where id = $1::uuid and (from_user = $2 or to_user = $2)`,
+    [id, userId],
+  );
+  if (!share.rowCount) throw new HttpError(404, "That share no longer exists");
+
+  enforceSocialRate(userId, "share-message", 240, 60 * 60_000);
+
+  const messageId = randomUUID();
+  const createdAt = new Date().toISOString();
+  await pool.query(
+    `insert into public.knomad_share_messages (id, share_id, author_id, body)
+     values ($1, $2::uuid, $3, $4)`,
+    [messageId, id, userId, text],
+  );
+
+  // A reply brings a dismissed lead back, and posting counts as reading the
+  // other person's side of the thread.
+  await pool.query(
+    `update public.knomad_shares
+        set status = case when status = 'dismissed' then 'inbox' else status end
+      where id = $1::uuid`,
+    [id],
+  );
+  await pool.query(
+    `update public.knomad_share_messages
+        set read_at = now()
+      where share_id = $1::uuid and author_id <> $2 and read_at is null`,
+    [id, userId],
+  );
+
+  return c.json({
+    message: {
+      id: messageId,
+      body: text,
+      authorId: userId,
+      mine: true,
+      createdAt,
+      readAt: null,
+    },
+  });
+});
+
+app.post("/shares/:id/messages/read", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const id = c.req.param("id");
+  if (!UUID_PATTERN.test(id)) throw new HttpError(400, "Share id must be a UUID");
+
+  const share = await pool.query(
+    `select 1
+       from public.knomad_shares
+      where id = $1::uuid and (from_user = $2 or to_user = $2)`,
+    [id, userId],
+  );
+  if (!share.rowCount) throw new HttpError(404, "That share no longer exists");
+
+  await pool.query(
+    `update public.knomad_share_messages
+        set read_at = now()
+      where share_id = $1::uuid and author_id <> $2 and read_at is null`,
     [id, userId],
   );
   return c.json({ ok: true });

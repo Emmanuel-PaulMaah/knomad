@@ -2400,6 +2400,78 @@
 
     .share-actions { padding-left: 46px; }
 
+    .share-thread-toggle { gap: 6px; }
+
+    .share-thread-new {
+      margin-left: 6px;
+      padding: 1px 5px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: var(--bg);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.5;
+    }
+
+    .share-thread {
+      margin-left: 46px;
+      padding: 12px 14px;
+      display: grid;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg-2);
+    }
+
+    .share-thread-list {
+      display: grid;
+      gap: 10px;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .share-thread-empty { margin: 0; color: var(--muted); font-size: 12px; }
+
+    .share-message {
+      display: grid;
+      gap: 3px;
+      padding-left: 10px;
+      border-left: 2px solid var(--line-strong);
+    }
+
+    .share-message.mine { border-left-color: var(--accent); }
+
+    .share-message-meta {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .share-message-meta strong { color: var(--text-2); font-size: 11.5px; font-weight: 600; }
+
+    .share-message.unread .share-message-meta strong { color: var(--text); }
+
+    .share-message p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .share-reply { display: flex; gap: 8px; align-items: flex-end; }
+
+    .share-reply textarea {
+      min-height: 44px;
+      max-height: 140px;
+      padding: 8px 10px;
+      font-size: 12.5px;
+    }
+
+    .share-reply .btn { flex-shrink: 0; }
+
     .friend-add-row { display: flex; gap: 8px; }
 
     .friend-add-row input { flex: 1; min-width: 0; }
@@ -2557,6 +2629,9 @@
       .settings-grid { grid-template-columns: 1fr; }
       .social-person { flex-wrap: wrap; }
       .share-actions { padding-left: 0; }
+      .share-thread { margin-left: 0; }
+      .share-reply { flex-direction: column; align-items: stretch; }
+      .share-reply .btn { width: 100%; }
       .friend-add-row { flex-wrap: wrap; }
       .friend-add-row .btn { width: 100%; }
       .dropzone { align-items: flex-start; flex-direction: column; gap: 12px; }
@@ -3101,7 +3176,7 @@
           <div class="page-head">
             <div>
               <p class="page-desc">Add people you trust, send them job leads, and keep every introduction in one shared inbox.</p>
-              <p class="label-mono" id="friendsSummary">Sign in to add kniggurs</p>
+              <p class="label-mono" id="friendsSummary">Sign in to add friends</p>
             </div>
             <div class="social-head-actions" id="friendsHeadActions" hidden>
               <button class="btn ghost small" id="friendsRefreshBtn" type="button">Refresh</button>
