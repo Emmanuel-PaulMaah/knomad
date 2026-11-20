@@ -594,7 +594,7 @@ app.post("/friends/request", async (c) => {
   const targetId = target.rows[0].id as string;
   if (targetId === userId) throw new HttpError(400, "That is your own account");
   if (await areFriends(userId, targetId)) {
-    throw new HttpError(409, "You are already friends with " + target.rows[0].name);
+    throw new HttpError(409, target.rows[0].name + " is already one of your kniggurs");
   }
 
   // If the other person asked first, this request is the answer: accept it
@@ -677,7 +677,7 @@ app.delete("/friends/requests/:id", async (c) => {
 app.delete("/friends/:id", async (c) => {
   const userId = await requireUser(c.req.header("authorization"));
   const friendId = c.req.param("id");
-  if (!UUID_PATTERN.test(friendId)) throw new HttpError(400, "Friend id must be a UUID");
+  if (!UUID_PATTERN.test(friendId)) throw new HttpError(400, "Kniggur id must be a UUID");
 
   const [userA, userB] = canonicalPair(userId, friendId);
   const removed = await pool.query(
@@ -711,7 +711,7 @@ app.post("/shares", async (c) => {
   if (!UUID_PATTERN.test(toUserId)) throw new HttpError(400, "toUserId must be a UUID");
   if (toUserId === userId) throw new HttpError(400, "You cannot send a job to yourself");
   if (!(await areFriends(userId, toUserId))) {
-    throw new HttpError(403, "You can only send jobs to friends");
+    throw new HttpError(403, "You can only send jobs to kniggurs");
   }
 
   const company = cleanText(body?.company, 240);

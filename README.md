@@ -85,10 +85,10 @@ Friends live in your knomad account, so this page needs you to be signed in.
    - **Send a job** on the Friends page opens a short form: pick the friend, add a company, role, link, and note.
    - **Send to friend** on any application page carries that application's company, role, link, and job description with it.
    - **Send** on a job search result shares that lead before you track it yourself.
-4. The recipient sees it in **Shared inbox** with an unread count on the rail icon. They can **Open posting**, **Track job**, **Mark read**, or **Dismiss** it. **Track job** starts the normal Add job flow with the details prefilled.
+4. The recipient sees it in the **Inbox** tab of the **Shared jobs** card, with an unread count on the rail icon. They can **Open posting**, **Track job**, **Mark read**, or **Dismiss** it. **Track job** starts the normal Add job flow with the details prefilled.
 5. **Reply** under any shared job opens a thread with that friend. Both people can post; the other side sees an unread badge on the thread and a toast from any page. Opening a thread marks the other person's replies read. Replying to a dismissed job brings it back to the recipient's inbox.
 
-**Sent** keeps a record of what you shared, and each sent job has the same reply thread. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
+**Sent** is the second tab on the same card and keeps a record of what you shared; each sent job has the same reply thread. The tabs show how many jobs are on each side, so a conversation you started is never buried in a separate card. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
 
 The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Friends page. Unread counts, reply notifications, and new-job toasts work from any page. A reply box you are actively typing in is left alone by the silent poll; drafts stay put until you send or close the thread.
 

@@ -1058,7 +1058,7 @@ const calendarState = {
 const PAGE_TITLES = {
   dashboard: 'Dashboard',
   search: 'Find jobs',
-  friends: 'Friends',
+  friends: 'Kniggurs',
   tracker: 'Applications',
   calendar: 'Calendar',
   application: 'Application',
@@ -5207,6 +5207,7 @@ let socialSeenInbox = null;
 let socialSeenMessages = null;
 let socialGeneration = 0;
 let shareJobDraft = { jobDescription: '' };
+let shareTab = 'inbox';
 const openShareThreads = new Set();
 const shareReplyDrafts = new Map();
 
@@ -5215,6 +5216,7 @@ function resetSocial() {
   socialSeenInbox = null;
   socialSeenMessages = null;
   socialGeneration += 1;
+  shareTab = 'inbox';
   openShareThreads.clear();
   shareReplyDrafts.clear();
   state.social = {
@@ -5288,7 +5290,7 @@ async function loadSocial(options = {}) {
     if (socialSeenInbox) {
       const fresh = inbox.filter((item) => !item.readAt && !socialSeenInbox.has(item.id));
       if (fresh.length) {
-        const from = (fresh[0].from && fresh[0].from.name) || 'A friend';
+        const from = (fresh[0].from && fresh[0].from.name) || 'A kniggur';
         toast(fresh.length === 1 ? from + ' sent you a job' : from + ' sent you ' + fresh.length + ' jobs');
       }
     }
@@ -5345,7 +5347,7 @@ async function loadSocial(options = {}) {
       return;
     }
     state.social.status = 'error';
-    state.social.error = err.message || 'Could not load friends';
+    state.social.error = err.message || 'Could not load kniggurs';
     if (!silent) renderFriends();
   } finally {
     socialInFlight = false;
@@ -5365,7 +5367,7 @@ function renderFriends() {
 
   if (!configured && signedOut) {
     const copy = signedOut.querySelector('p');
-    if (copy) copy.textContent = 'This build has no Neon Auth or sync Function URL, so friends cannot be added yet.';
+    if (copy) copy.textContent = 'This build has no Neon Auth or sync Function URL, so kniggurs cannot be added yet.';
   }
 
   const summary = $('#friendsSummary');
@@ -5373,14 +5375,14 @@ function renderFriends() {
     if (!configured) {
       summary.textContent = 'Cloud sync is not configured in this build';
     } else if (!signedIn) {
-      summary.textContent = 'Sign in to add friends and share jobs';
+      summary.textContent = 'Sign in to add kniggurs and share jobs';
     } else if (state.social.status === 'error') {
       summary.textContent = state.social.error;
     } else if (state.social.status === 'loading' || state.social.status === 'off') {
-      summary.textContent = 'Loading your friends…';
+      summary.textContent = 'Loading your kniggurs…';
     } else {
       const count = state.social.friends.length;
-      summary.textContent = count + (count === 1 ? ' friend' : ' friends') +
+      summary.textContent = count + (count === 1 ? ' kniggur' : ' kniggurs') +
         ' · ' + socialUnreadTotal() + ' unread';
     }
   }
@@ -5392,6 +5394,7 @@ function renderFriends() {
   renderFriendList();
   renderSharedInbox();
   renderSentShares();
+  renderSharedTabs();
 }
 
 function socialAvatar(user) {
@@ -5426,7 +5429,7 @@ function renderFriendRequests() {
         socialAvatar(request.from) +
         '<div class="social-person-main">' +
           '<strong>' + escapeHtml(socialPersonName(request.from)) + '</strong>' +
-          '<span>Wants to be friends</span>' +
+          '<span>Wants to be kniggurs</span>' +
         '</div>' +
         '<div class="social-person-actions">' +
           '<button class="btn primary small" type="button" data-accept-request="' + escapeHtml(request.id) + '">Accept</button>' +
@@ -5458,7 +5461,7 @@ function renderFriendList() {
   if (count) count.textContent = friends.length ? friends.length + ' total' : '';
 
   if (!friends.length) {
-    host.innerHTML = '<div class="social-empty">No friends yet. Send a request by email above; once they accept, you can swap job leads here.</div>';
+    host.innerHTML = '<div class="social-empty">No kniggurs yet. Send a request by email above; once they accept, you can swap job leads here.</div>';
     return;
   }
 
@@ -5533,22 +5536,52 @@ function shareThreadHtml(share, friend) {
   '</div>';
 }
 
+function renderSharedTabs() {
+  const inbox = state.social.inbox || [];
+  const sent = state.social.sent || [];
+
+  const inboxTab = $('#inboxTabCount');
+  const sentTab = $('#sentTabCount');
+  if (inboxTab) inboxTab.textContent = String(inbox.length);
+  if (sentTab) sentTab.textContent = String(sent.length);
+
+  const count = $('#inboxCount');
+  if (count) {
+    const unread = inbox.filter((item) => !item.readAt).length;
+    const newReplies = inbox.reduce((total, item) => total + (Number(item.messageUnread) || 0), 0);
+    const parts = [];
+    if (unread) parts.push(unread + ' unread');
+    if (newReplies) parts.push(newReplies + (newReplies === 1 ? ' new reply' : ' new replies'));
+    count.textContent = parts.join(' · ');
+  }
+
+  document.querySelectorAll('[data-share-tab]').forEach((tab) => {
+    const active = tab.dataset.shareTab === shareTab;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  const inboxHost = $('#sharedInbox');
+  const sentHost = $('#sentList');
+  if (inboxHost) inboxHost.hidden = shareTab !== 'inbox';
+  if (sentHost) sentHost.hidden = shareTab !== 'sent';
+}
+
+function setShareTab(tab) {
+  const next = tab === 'sent' ? 'sent' : 'inbox';
+  if (next === shareTab) return;
+  shareTab = next;
+  renderSharedTabs();
+}
+
 function renderSharedInbox() {
   const host = $('#sharedInbox');
   if (!host) return;
 
   const inbox = state.social.inbox || [];
-  const count = $('#inboxCount');
-  if (count) {
-    const unread = inbox.filter((item) => !item.readAt).length;
-    const newReplies = inbox.reduce((total, item) => total + (Number(item.messageUnread) || 0), 0);
-    const parts = [unread + ' unread', inbox.length + ' total'];
-    if (newReplies) parts.push(newReplies + (newReplies === 1 ? ' new reply' : ' new replies'));
-    count.textContent = inbox.length ? parts.join(' · ') : 'Empty';
-  }
 
   if (!inbox.length) {
-    host.innerHTML = '<div class="social-empty">Nothing here yet. When a friend sends you a role it lands in this inbox, with their note and a one-click track button.</div>';
+    host.innerHTML = '<div class="social-empty">Nothing in your inbox yet. When a kniggur sends you a role it lands here, with their note and a one-click track button.</div>';
     return;
   }
 
@@ -5593,17 +5626,12 @@ function renderSharedInbox() {
 }
 
 function renderSentShares() {
-  const card = $('#sentCard');
   const host = $('#sentList');
-  if (!card || !host) return;
+  if (!host) return;
 
   const sent = state.social.sent || [];
-  card.hidden = sent.length === 0;
-
-  const count = $('#sentCount');
-  if (count) count.textContent = sent.length ? sent.length + ' total' : '';
   if (!sent.length) {
-    host.innerHTML = '';
+    host.innerHTML = '<div class="social-empty">Nothing sent yet. Jobs you send to kniggurs appear here with the same reply thread.</div>';
     return;
   }
 
@@ -5649,7 +5677,7 @@ async function handleFriendRequest(event) {
   try {
     const data = await api('/friends/request', { method: 'POST', body: { email } });
     if (input) input.value = '';
-    toast(data && data.status === 'accepted' ? 'You are now friends' : 'Friend request sent');
+    toast(data && data.status === 'accepted' ? 'You are now kniggurs' : 'Kniggur request sent');
     await loadSocial({ silent: true });
   } catch (err) {
     if (isAuthRequired(err)) handleAuthRequired();
@@ -5662,7 +5690,7 @@ async function handleFriendRequest(event) {
 async function respondToFriendRequest(requestId, action) {
   try {
     await api('/friends/respond', { method: 'POST', body: { requestId, action } });
-    toast(action === 'accept' ? 'Friend added' : 'Request declined');
+    toast(action === 'accept' ? 'Kniggur added' : 'Request declined');
     await loadSocial({ silent: true });
   } catch (err) {
     if (isAuthRequired(err)) handleAuthRequired();
@@ -5683,16 +5711,16 @@ async function cancelFriendRequest(requestId) {
 
 async function removeFriend(friendId) {
   const friend = (state.social.friends || []).find((entry) => entry.id === friendId);
-  const name = friend ? socialPersonName(friend) : 'this friend';
-  if (!confirm('Remove ' + name + ' from your friends? They will no longer be able to send you jobs.')) return;
+  const name = friend ? socialPersonName(friend) : 'this kniggur';
+  if (!confirm('Remove ' + name + ' from your kniggurs? They will no longer be able to send you jobs.')) return;
 
   try {
     await api('/friends/' + encodeURIComponent(friendId), { method: 'DELETE' });
-    toast('Friend removed');
+    toast('Kniggur removed');
     await loadSocial({ silent: true });
   } catch (err) {
     if (isAuthRequired(err)) handleAuthRequired();
-    else toast(err.message || 'Could not remove that friend', 'error');
+    else toast(err.message || 'Could not remove that kniggur', 'error');
   }
 }
 
@@ -5872,7 +5900,7 @@ async function openShareModal(prefill = {}) {
     return;
   }
   if (!state.cloud.user) {
-    toast('Sign in to send jobs to friends', 'error');
+    toast('Sign in to send jobs to kniggurs', 'error');
     showPage('settings');
     return;
   }
@@ -5883,7 +5911,7 @@ async function openShareModal(prefill = {}) {
 
   const friends = state.social.friends || [];
   if (!friends.length) {
-    toast('Add a friend first, then send them a job', 'error');
+    toast('Add a kniggur first, then send them a job', 'error');
     showPage('friends');
     return;
   }
@@ -5944,7 +5972,7 @@ async function handleShareJobSubmit(event) {
     }
   };
 
-  if (!toUserId) return fail('Choose a friend first.');
+  if (!toUserId) return fail('Choose a kniggur first.');
   if (!company && !position && !url) return fail('Add a company, a role, or a job link.');
 
   if (submit) submit.disabled = true;
@@ -5963,7 +5991,7 @@ async function handleShareJobSubmit(event) {
       }
     });
     closeModal($('#shareJobModal'));
-    toast('Job sent to ' + ((data && data.share && data.share.to && data.share.to.name) || 'your friend'));
+    toast('Job sent to ' + ((data && data.share && data.share.to && data.share.to.name) || 'your kniggur'));
     await loadSocial({ silent: true });
   } catch (err) {
     if (isAuthRequired(err)) {
@@ -6133,6 +6161,13 @@ function bindEvents() {
     if (shareThread) {
       event.preventDefault();
       toggleShareThread(shareThread.dataset.shareThread);
+      return;
+    }
+
+    const shareTabButton = event.target.closest('[data-share-tab]');
+    if (shareTabButton) {
+      event.preventDefault();
+      setShareTab(shareTabButton.dataset.shareTab);
       return;
     }
 
