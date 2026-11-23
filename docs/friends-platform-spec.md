@@ -51,7 +51,7 @@ graph. Dated items from both sides flow into the existing Calendar.
 | **Scope** | `me` (personal) or a circle. Every item has exactly one scope. |
 | **Item** | Any row in the new tables: task, list, project, skill, book, goal, contact. |
 | **Jobs** | Job search, intake, applications, and the application page. A peer of Together. |
-| **Together** | The shared-workspace page: to-dos, projects, learning, shelf, CRM. A peer of Jobs, not a subset of them. |
+| **Together** | The shared-workspace page: kniggurs and the shared inbox, to-dos, projects, learning, shelf, CRM. A peer of Jobs, not a subset of them. |
 
 Rules:
 
@@ -77,8 +77,11 @@ Jobs
   Dashboard · Tracker · Application page · Find jobs
 Together
   [ Just me ▾ ]  (scope switcher: Just me, then each circle)
-  To-dos · Projects · Learning · Shelf · CRM
+  Kniggurs · To-dos · Projects · Learning · Shelf · CRM
 ```
+
+Kniggurs and the shared inbox are a tab on Together, not a separate page: adding a
+kniggur, sending a job, and replying to a job thread sit beside the workspace tools.
 
 - **To-dos** — lists on the left, tasks on the right. Group by list, due date, or
   assignee. Inline add, check off, reassign, set due date, move to a project.
@@ -279,11 +282,24 @@ create table public.knomad_books (
   started_on  date,
   finished_on date,
   cover_url   text not null default '',
+  link_url    text not null default '',
   notes       text not null default '',
   version     integer not null default 1,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   deleted_at  timestamptz
+);
+
+create table public.knomad_shelf_categories (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   text not null,
+  circle_id  uuid references public.knomad_circles(id) on delete set null,
+  name       text not null,
+  position   integer not null default 0,
+  version    integer not null default 1,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
 );
 
 create table public.knomad_reading_goals (
@@ -302,8 +318,13 @@ create table public.knomad_reading_goals (
 );
 ```
 
-- Shelves are the four `shelf` values. Categories are free text with suggestions
-  (Fiction, Business, Design, Science, Biography, …) and a category filter on the shelf.
+- Each scope has its own category list in `knomad_shelf_categories`: the circle
+  owner curates the circle's list (starting from suggestions such as Fiction,
+  Business, Design, Science, Biography), and a personal reader curates their own.
+  Members pick from that list when adding a book; retiring a category leaves the
+  label on existing books, and the shelf still filters by those old labels.
+- A book may carry an optional `link_url` (for example a Google Drive copy).
+  Only http and https URLs are accepted, and the shelf opens them in a new tab.
 - Moving a book to `finished` stamps `finished_on` and requires `pages_read = pages_total`
   unless the book has no page count.
 - Goal progress is computed, not stored: count finished books or pages between
@@ -400,10 +421,12 @@ All routes live in `src/function/index.ts`, use the existing `requireUser` helpe
 and return the standard error shape. List routes accept `?scope=me|circle:<uuid>&since=<iso>`.
 Writes accept `version` and return `409` with `{ error, current }` on a stale version.
 
-> **Phase 1 status.** `/space` currently returns a full snapshot (no `?since` delta yet).
+> **Shipped status.** `/space` currently returns a full snapshot (no `?since` delta yet).
 > `/circles`, `/circles/:id`, `/circles/:id/members`, `/task-lists`, `/task-lists/:id`,
-> `/tasks`, and `/tasks/:id` are live. The project, skill, book, goal, and contact
-> routes below are the design for later phases, not shipped endpoints.
+> `/tasks`, `/tasks/:id`, `/projects`, `/projects/:id`, `/books`, `/books/:id`,
+> `/shelf-categories`, `/contacts`, and `/contacts/:id/notes` are live. The skill,
+> reading-goal, and export routes below are the design for later phases, not shipped
+> endpoints.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -417,7 +440,7 @@ Writes accept `version` and return `409` with `{ error, current }` on a stale ve
 | `PATCH` | `/task-lists/:id` | Rename, recolour, reorder, share to a circle. |
 | `DELETE` | `/task-lists/:id` | Soft delete; tasks become listless, not deleted. |
 | `POST` | `/projects` | Create a project. |
-| `PATCH` | `/projects/:id` | Edit, change status, share. |
+| `PATCH` | `/projects/:id` | Edit name, summary, status, start date, and target date. |
 | `DELETE` | `/projects/:id` | Soft delete; tasks stay and lose the project link. |
 | `POST` | `/tasks` | Create. |
 | `PATCH` | `/tasks/:id` | Edit, complete, reorder, assign, set due date, move scope. |
@@ -430,6 +453,8 @@ Writes accept `version` and return `409` with `{ error, current }` on a stale ve
 | `POST` | `/books` | Add a book. |
 | `PATCH` | `/books/:id` | Edit, move shelf, update pages, share. |
 | `DELETE` | `/books/:id` | Soft delete. |
+| `POST` | `/shelf-categories` | Create a category for a personal or circle shelf. Owner only for a circle. |
+| `DELETE` | `/shelf-categories/:id` | Soft delete; existing books keep the label. Owner only. |
 | `POST` | `/reading-goals` | Create a goal. |
 | `PATCH` | `/reading-goals/:id` | Edit target or period. |
 | `DELETE` | `/reading-goals/:id` | Soft delete. |
@@ -447,13 +472,13 @@ Response shape for `/space` (Phase 1):
   "cursor": "2026-11-20T09:14:02.113Z",
   "circles": [{ "id": "...", "ownerId": "...", "name": "Lagos crew", "color": "accent", "role": "owner", "version": 1 }],
   "members": [{ "circleId": "...", "userId": "...", "role": "owner", "joinedAt": "..." }],
-  "taskLists": [], "tasks": [],
+  "taskLists": [], "projects": [], "tasks": [],
   "people": { "<userId>": { "id": "...", "name": "...", "email": "...", "headline": "..." } }
 }
 ```
 
-Later phases add `projects`, `skills`, `skillProgress`, `skillLogs`, `books`,
-`readingGoals`, `contacts`, and `contactNotes` to the same snapshot.
+Later phases add `skills`, `skillProgress`, `skillLogs`, `readingGoals`, and
+the remaining CRM fields to the same snapshot.
 
 Access rule, in one helper:
 
@@ -522,30 +547,38 @@ signed-out app keeps working without it.
   due dates, circle assignees, and a local per-user cache (`knomad_space_<userId>`).
 - Calendar merge through `scheduleItems()`, per-source filter (`knomad_cal_scope`),
   open-from-calendar, and complete-from-calendar.
+- Dashboard Activity counts completed Together tasks and finished books beside added
+  applications; Status breakdown adds Together open/done tasks and reading/finished
+  books. Settings hides both charts (`knomad_dash_insights`).
 - E2E coverage in `scripts/test-services.mjs`.
 
 *Deliberately deferred to Phase 6:* `?since` deltas and tombstones, the offline mutation
 queue, the conflict dialog (Phase 1 toasts and reloads the snapshot), Realtime
 invalidation, and export. The cache is full-snapshot, not scope-keyed.
 
-**Phase 2 — Projects**
-Projects table, milestones, progress bar, project detail, calendar chips.
-Done when: a milestone completed by one member updates the other member's progress
-without a reload beyond the poll.
+**Phase 2 — Projects (shipped)**
+`knomad_projects`, the `project_id` task link, `/projects`, milestones, progress bars,
+the project detail modal, task-to-project assignment, calendar target chips, and
+Dashboard target rows are live. Progress is done milestones over all milestones,
+falling back to done tasks over all tasks. Milestone completion is a normal task
+write, so another member sees the new progress on the shared 30-second poll.
 
 **Phase 3 — Learning**
 Skills, per-member progress, logs, weekly goal, calendar target date.
 Done when: a circle skill shows one bar per member and each member can only write their own.
 
 **Phase 4 — Shelf**
-Books, shelves, categories, reading goals, computed progress, Dashboard "Reading now".
+Books, shelves, categories, and page progress are live. Reading goals, computed goal
+progress, and Dashboard "Reading now" remain.
 Done when: a finished book updates the yearly goal immediately and a circle goal shows
 per-member contributions.
 
-**Phase 5 — CRM**
-Contacts, notes, stages, tags, follow-ups, calendar entries.
-Done when: logging a note updates last touch and a follow-up appears on the Calendar
-and Dashboard.
+**Phase 5 — CRM (shipped)**
+Contacts, notes, stages, tags, follow-ups, calendar entries, and the Together CRM tab are live.
+Contacts are private by default; a circle scope shares them. Logging a note updates
+`last_contact_on`; follow-ups appear on the Calendar and Dashboard. Note deletion is
+author or circle-owner. Done when: logging a note updates last touch and a follow-up
+appears on the Calendar and Dashboard.
 
 **Phase 6 — Hardening**
 Realtime invalidation, offline queue replay, conflict dialog, export, tests in
@@ -559,6 +592,9 @@ Add to `scripts/test-services.mjs`:
 - Task create in a circle, edit with stale version returns `409` and the current row.
 - Personal task is invisible to the other account.
 - Task due date appears in `/space` and in the client's `scheduleItems()`.
+- Project create, task-to-project move, milestone completion, and project target in
+  `/space`; deleting a project leaves its tasks behind.
+- A milestone without a project is rejected with `400`.
 - Skill progress is per user and a member cannot write another member's row.
 - Book moved to `finished` counts in a `books` goal.
 - Contact stays private until shared; shared contact is readable by the circle.
@@ -568,7 +604,8 @@ Phase 1's "Together" test covers circle create and member add, a stale edit retu
 `409` with the current row, personal-task invisibility, a member completing a shared
 task, and archive detaching rows back to their creator. Inaccessible rows currently
 return `404` rather than revealing that they exist; the point is covered by the
-personal-invisibility check. The remaining bullets arrive with their phases.
+personal-invisibility check. The project bullets live in that same block; the skill
+and reading-goal bullets arrive with their phases.
 
 ## 12. Open questions
 
@@ -579,8 +616,9 @@ personal-invisibility check. The remaining bullets arrive with their phases.
 3. **Personal data location.** Recommend server-owned personal rows (same tables,
    `circle_id = null`) so a phone and laptop stay in sync. This differs from
    `knomad_docs`, which is last-write-wins; the new tables use versions everywhere.
-4. **CRM sharing default.** Recommend private-by-default and an explicit "Share with
-   circle" action. Confirm before Phase 5.
+4. **CRM sharing default.** Confirmed: private by default with an explicit shared
+   scope (`visibility = 'circle'`); contacts and notes are hidden unless the contact
+   belongs to the signed-in user's circle or is the owner's personal contact.
 5. **Page name.** "Together" is the working label. Alternatives: "Crew", "Shared".
 6. **Job sharing scope.** Should job applications become circle-scoped (shared
    tracking), or stay personal with shared leads as today? Recommend keeping
