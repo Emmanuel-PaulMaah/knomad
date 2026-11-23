@@ -35,7 +35,10 @@ const STORE = {
   applications: 'knomad_applications',
   key: 'knomad_gemini_key',
   clocks: 'knomad_sync_clocks',
-  cursor: 'knomad_sync_cursor'
+  cursor: 'knomad_sync_cursor',
+  space: 'knomad_space',
+  calScope: 'knomad_cal_scope',
+  dashInsights: 'knomad_dash_insights'
 };
 
 const STATUS = ['applied', 'interviewing', 'offer', 'rejected'];
@@ -237,6 +240,21 @@ const state = {
     sent: [],
     unread: 0,
     unreadMessages: 0
+  },
+  space: {
+    status: 'off',
+    error: '',
+    loaded: false,
+    circles: [],
+    members: [],
+    taskLists: [],
+    projects: [],
+    tasks: [],
+    books: [],
+    shelfCategories: [],
+    contacts: [],
+    contactNotes: [],
+    people: {}
   }
 };
 
@@ -567,6 +585,7 @@ function startPolling() {
     flushCloudQueue();
     pullCloudDocs(false);
     loadSocial({ silent: true });
+    loadSpace({ silent: true });
   }, CLOUD_POLL_MS);
 }
 
@@ -581,6 +600,7 @@ function stopCloudSync() {
   cloudDiffApplications.clear();
   state.cloud = { user: null, status: 'off', lastSync: null, error: '', realtime: false };
   resetSocial();
+  resetSpace();
 }
 
 async function startCloudSync(session) {
@@ -593,6 +613,9 @@ async function startCloudSync(session) {
   state.cloud.user = user;
   state.cloud.status = 'syncing';
   state.cloud.error = '';
+  spaceGeneration += 1;
+  spaceLoading = false;
+  readSpaceCache();
   renderAccount();
 
   const hadCursor = Boolean(readCursor());
@@ -625,6 +648,7 @@ async function startCloudSync(session) {
   startPolling();
   setCloudStatus('synced');
   loadSocial({ silent: true });
+  loadSpace({ silent: true });
 }
 
 async function restoreCloudSession() {
@@ -927,6 +951,21 @@ function formatDate(iso) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+// Date-only values come back as "YYYY-MM-DD"; parse them as local dates so
+// they do not slide to the previous day outside positive timezones.
+function formatDay(value) {
+  if (!value) return '';
+  const text = String(value).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, day] = text.split('-').map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric'
+    });
+  }
+  return formatDate(value);
+}
+
 function wordCount(text) {
   return String(text || '').trim().split(/\s+/).filter(Boolean).length;
 }
@@ -1011,6 +1050,12 @@ function formatEventDateTime(value) {
     ' · ' + formatTime(date);
 }
 
+// Date-only columns arrive from the API as full ISO timestamps; inputs and
+// schedule math need just the calendar day.
+function dayOnly(value) {
+  return value ? String(value).slice(0, 10) : '';
+}
+
 function relativeDay(value) {
   const target = startOfDay(value);
   const today = startOfDay(new Date());
@@ -1058,7 +1103,7 @@ const calendarState = {
 const PAGE_TITLES = {
   dashboard: 'Dashboard',
   search: 'Find jobs',
-  friends: 'Kniggurs',
+  together: 'Together',
   tracker: 'Applications',
   calendar: 'Calendar',
   application: 'Application',
@@ -1094,11 +1139,17 @@ function showPage(page) {
     backBtn.setAttribute('title', label);
   }
 
-  if (target === 'dashboard') renderDashboard();
+  if (target === 'dashboard') {
+    renderDashboard();
+    if (cloudReady() && !state.space.loaded) loadSpace({ silent: true });
+  }
   if (target === 'search') renderJobSearch();
-  if (target === 'friends') {
-    renderFriends();
-    if (cloudReady()) loadSocial({ silent: state.social.status === 'ready' });
+  if (target === 'together') {
+    renderTogether();
+    if (cloudReady()) {
+      loadSpace({ silent: state.space.status === 'ready' });
+      loadSocial({ silent: state.social.status === 'ready' });
+    }
   }
   if (target === 'tracker') renderTracker();
   if (target === 'calendar') renderCalendar();
@@ -1116,7 +1167,7 @@ function refreshCurrentPage() {
   if (currentPage === 'dashboard') renderDashboard();
   else if (currentPage === 'tracker') renderTracker();
   else if (currentPage === 'calendar') renderCalendar();
-  else if (currentPage === 'friends') renderFriends();
+  else if (currentPage === 'together') renderTogether();
   else if (currentPage === 'settings') renderSettings();
   else if (currentPage === 'application') {
     if (currentDetailId) renderApplication();
@@ -1129,6 +1180,16 @@ function refreshCurrentPage() {
 }
 
 // ---------------------------------------------------------------- Dashboard
+
+// Activity and Status breakdown are a preference, not data: hiding them keeps
+// the dashboard narrow without touching the applications behind them.
+let dashInsights = localStorage.getItem(STORE.dashInsights) !== 'off';
+
+function refreshDashboardInsights() {
+  if (!dashInsights || currentPage !== 'dashboard') return;
+  renderActivity(state.applications);
+  renderStatusChart(state.applications);
+}
 
 function renderDashboard() {
   const profile = state.profile;
@@ -1168,11 +1229,25 @@ function renderDashboard() {
 
   renderChips(profile);
   renderStats(applications);
-  renderActivity(applications);
-  renderStatusChart(applications);
+  const charts = $('#dashCharts');
+  if (charts) charts.hidden = !dashInsights;
+  if (dashInsights) {
+    renderActivity(applications);
+    renderStatusChart(applications);
+  }
   renderUpcoming();
+  renderTogetherDash();
   renderRecent(applications);
-  renderResumeSheet(profile);
+
+  // Collapsible chart toggles
+  $$('[data-toggle-chart]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.toggleChart;
+      const chartCard = btn.closest('.chart-card');
+      if (!chartCard) return;
+      chartCard.classList.toggle('collapsed');
+    });
+  });
 }
 
 function renderChips(profile) {
@@ -1231,8 +1306,7 @@ function dashboardMetrics(applications) {
     offers: counts.offer,
     replied,
     responseRate: total ? Math.round((replied / total) * 100) : 0
-  };
-}
+  };  }
 
 function renderStats(applications) {
   const host = $('#statsGrid');
@@ -1275,12 +1349,48 @@ function renderStats(applications) {
   )).join('');
 }
 
+function activityDayTime(value) {
+  if (!value) return null;
+  const text = String(value);
+  // A book's finished_on is a date with no timezone. Parsing it as UTC would
+  // move it to the previous day west of Greenwich, so build it as local time.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, day] = text.split('-').map(Number);
+    return new Date(year, month - 1, day).getTime();
+  }
+  const date = startOfDay(value);
+  return date ? date.getTime() : null;
+}
+
+// Together activity is what got finished: completed tasks and finished books.
+// Adding an empty task is not an accomplishment, so it stays out of the chart.
+function togetherActivityDays() {
+  const days = [];
+  (state.space.tasks || []).forEach((task) => {
+    if (!task.completedAt) return;
+    const day = activityDayTime(task.completedAt);
+    if (day != null) days.push(day);
+  });
+  (state.space.books || []).forEach((book) => {
+    if (book.shelf !== 'finished' || !book.finishedOn) return;
+    const day = activityDayTime(book.finishedOn);
+    if (day != null) days.push(day);
+  });
+  (state.space.contactNotes || []).forEach((note) => {
+    if (!note.happenedOn) return;
+    const day = activityDayTime(note.happenedOn);
+    if (day != null) days.push(day);
+  });
+  return days;
+}
+
 function renderActivity(applications) {
   const host = $('#activityChart');
   if (!host) return;
 
-  if (!applications.length) {
-    host.innerHTML = '<div class="chart-empty">No applications yet<span>Add a job and it appears on this timeline</span></div>';
+  const togetherDays = togetherActivityDays();
+  if (!applications.length && !togetherDays.length) {
+    host.innerHTML = '<div class="chart-empty">No activity yet<span>Add a job or finish a Together task or book</span></div>';
     return;
   }
 
@@ -1290,26 +1400,48 @@ function renderActivity(applications) {
   const start = today.getTime() - (days - 1) * DAY_MS;
   const buckets = Array.from({ length: days }, (_, index) => ({
     date: new Date(start + index * DAY_MS),
-    count: 0
+    jobs: 0,
+    together: 0
   }));
 
   applications.forEach((app) => {
-    const applied = new Date(app.dateApplied);
-    if (Number.isNaN(applied.getTime())) return;
-    applied.setHours(0, 0, 0, 0);
-    const index = Math.round((applied.getTime() - start) / DAY_MS);
-    if (index >= 0 && index < days) buckets[index].count += 1;
+    const day = activityDayTime(app.dateApplied);
+    if (day == null) return;
+    const index = Math.round((day - start) / DAY_MS);
+    if (index >= 0 && index < days) buckets[index].jobs += 1;
   });
 
-  const max = Math.max(1, ...buckets.map((bucket) => bucket.count));
+  togetherDays.forEach((day) => {
+    const index = Math.round((day - start) / DAY_MS);
+    if (index >= 0 && index < days) buckets[index].together += 1;
+  });
+
+  const max = Math.max(1, ...buckets.map((bucket) => bucket.jobs + bucket.together));
+  const totalJobs = buckets.reduce((sum, bucket) => sum + bucket.jobs, 0);
+  const totalTogether = buckets.reduce((sum, bucket) => sum + bucket.together, 0);
 
   const bars = buckets.map((bucket) => {
-    const height = bucket.count ? Math.max(8, Math.round((bucket.count / max) * 100)) : 2;
+    const total = bucket.jobs + bucket.together;
+    const height = total ? Math.max(8, Math.round((total / max) * 100)) : 2;
     const label = formatDate(bucket.date);
-    const description = label + ' — ' + bucket.count + (bucket.count === 1 ? ' application' : ' applications');
+    const pieces = [];
+    if (bucket.jobs) pieces.push(bucket.jobs + (bucket.jobs === 1 ? ' application' : ' applications'));
+    if (bucket.together) {
+      pieces.push(bucket.together + (bucket.together === 1 ? ' Together action' : ' Together actions'));
+    }
+    const description = label + ' — ' + (pieces.length ? pieces.join(', ') : 'no activity');
+    const segments =
+      (bucket.jobs
+        ? '<span class="bar-seg jobs" style="flex-grow:' + bucket.jobs + '"></span>'
+        : '') +
+      (bucket.together
+        ? '<span class="bar-seg together" style="flex-grow:' + bucket.together + '"></span>'
+        : '');
     return '<div class="bar-col" title="' + escapeHtml(description) + '">' +
-      '<span class="bar-value">' + (bucket.count || '') + '</span>' +
-      '<span class="bar' + (bucket.count ? '' : ' empty') + '" style="height:' + height + '%"></span>' +
+      '<span class="bar-value">' + (total || '') + '</span>' +
+      '<span class="bar' + (total ? '' : ' empty') + '" style="height:' + height + '%">' +
+        segments +
+      '</span>' +
       '</div>';
   }).join('');
 
@@ -1317,8 +1449,26 @@ function renderActivity(applications) {
     .map((bucket) => '<span>' + escapeHtml(formatDate(bucket.date)) + '</span>')
     .join('');
 
-  host.innerHTML = '<div class="activity-bars" aria-hidden="true">' + bars + '</div>' +
-    '<div class="activity-axis">' + axis + '</div>';
+  host.innerHTML =
+    '<div class="activity-bars" role="img" aria-label="Last 14 days: ' + totalJobs +
+      (totalJobs === 1 ? ' application' : ' applications') + ', ' + totalTogether +
+      (totalTogether === 1 ? ' Together action' : ' Together actions') + '">' + bars + '</div>' +
+    '<div class="activity-axis">' + axis + '</div>' +
+    '<div class="activity-legend">' +
+      '<span><span class="legend-dot"></span>Jobs ' + totalJobs + '</span>' +
+      '<span><span class="legend-dot together"></span>Together ' + totalTogether + '</span>' +
+    '</div>';
+}
+
+function statusRow(key, name, count, total) {
+  const pct = total ? Math.round((count / total) * 100) : 0;
+  return '<div class="status-row' + (count ? '' : ' is-empty') + '">' +
+    '<div class="status-row-head">' +
+    '<span class="status-name"><span class="status-dot ' + key + '"></span>' + escapeHtml(name) + '</span>' +
+    '<span class="status-count">' + count + ' · ' + pct + '%</span>' +
+    '</div>' +
+    '<div class="status-track"><span class="status-fill ' + key + '" style="width:' + pct + '%"></span></div>' +
+    '</div>';
 }
 
 function renderStatusChart(applications) {
@@ -1328,8 +1478,6 @@ function renderStatusChart(applications) {
   if (!host) return;
 
   const total = applications.length;
-  if (totalEl) totalEl.textContent = total + (total === 1 ? ' application' : ' applications');
-
   const counts = STATUS.reduce((acc, key) => {
     acc[key] = 0;
     return acc;
@@ -1338,24 +1486,58 @@ function renderStatusChart(applications) {
     if (counts[app.status] != null) counts[app.status] += 1;
   });
 
-  host.innerHTML = STATUS.map((key) => {
-    const count = counts[key];
-    const pct = total ? Math.round((count / total) * 100) : 0;
-    return '<div class="status-row' + (count ? '' : ' is-empty') + '">' +
-      '<div class="status-row-head">' +
-      '<span class="status-name"><span class="status-dot ' + key + '"></span>' + STATUS_LABEL[key] + '</span>' +
-      '<span class="status-count">' + count + ' · ' + pct + '%</span>' +
-      '</div>' +
-      '<div class="status-track"><span class="status-fill ' + key + '" style="width:' + pct + '%"></span></div>' +
-      '</div>';
-  }).join('');
+  const tasks = state.space.tasks || [];
+  const books = state.space.books || [];
+  const openTasks = tasks.filter((task) => task.status !== 'done').length;
+  const doneTasks = tasks.length - openTasks;
+  const reading = books.filter((book) => book.shelf === 'reading').length;
+  const finished = books.filter((book) => book.shelf === 'finished').length;
+  const togetherTotal = tasks.length + books.length;
+
+  if (totalEl) {
+    totalEl.textContent = total + (total === 1 ? ' application' : ' applications') +
+      (togetherTotal ? ' · ' + togetherTotal + ' together' : '');
+  }
+
+  const groups = [
+    '<div class="status-group">' +
+      '<p class="status-group-title">Jobs</p>' +
+      STATUS.map((key) => statusRow(key, STATUS_LABEL[key], counts[key], total)).join('') +
+    '</div>'
+  ];
+
+  if (togetherTotal) {
+    const taskRows = tasks.length
+      ? statusRow('open', 'Open tasks', openTasks, tasks.length) +
+        statusRow('done', 'Done tasks', doneTasks, tasks.length)
+      : '';
+    const bookRows = books.length
+      ? statusRow('reading', 'Books reading', reading, books.length) +
+        statusRow('finished', 'Books finished', finished, books.length)
+      : '';
+    groups.push(
+      '<div class="status-group">' +
+        '<p class="status-group-title">Together</p>' +
+        taskRows + bookRows +
+      '</div>'
+    );
+  }
+
+  host.innerHTML = groups.join('');
 
   if (foot) {
-    const replied = total - counts.applied;
-    const rate = total ? Math.round((replied / total) * 100) : 0;
-    foot.textContent = total
-      ? replied + ' of ' + total + ' moved past applied · ' + rate + '% response rate'
-      : 'Add your first job to see how the pipeline fills in';
+    const parts = [];
+    if (total) {
+      const replied = total - counts.applied;
+      const rate = Math.round((replied / total) * 100);
+      parts.push(replied + ' of ' + total + ' moved past applied');
+      parts.push(rate + '% response rate');
+    }
+    if (tasks.length) parts.push(openTasks + ' open of ' + tasks.length + ' tasks');
+    if (books.length) parts.push(finished + ' of ' + books.length + ' books finished');
+    foot.textContent = parts.length
+      ? parts.join(' · ')
+      : 'Add a job or a Together item to see how this fills in';
   }
 }
 
@@ -1408,6 +1590,147 @@ function renderUpcoming() {
       '</span>' +
       '</button>';
   }).join('');
+}
+
+// Together is a peer of Jobs on the Dashboard, not a tab buried inside it.
+function togetherDashDueTasks() {
+  const tomorrow = startOfDay(new Date()).getTime() + DAY_MS;
+  return state.space.tasks
+    .filter((task) => task.status !== 'done' && task.dueAt)
+    .filter((task) => {
+      const at = new Date(task.dueAt).getTime();
+      return Number.isFinite(at) && at < tomorrow;
+    })
+    .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+}
+
+function togetherDashProjectTargets() {
+  const tomorrow = startOfDay(new Date()).getTime() + DAY_MS;
+  return (state.space.projects || [])
+    .filter((project) => project.status !== 'done' && project.targetOn)
+    .filter((project) => {
+      const at = new Date(dayOnly(project.targetOn) + 'T00:00:00').getTime();
+      return Number.isFinite(at) && at < tomorrow;
+    })
+    .sort((a, b) => dayOnly(a.targetOn).localeCompare(dayOnly(b.targetOn)));
+}
+
+function togetherDashFollowUps() {
+  const windowStart = startOfDay(new Date()).getTime();
+  const windowEnd = windowStart + 3 * DAY_MS;
+  return state.space.contacts
+    .filter((contact) => contact.nextFollowUpOn)
+    .filter((contact) => {
+      const day = dayOnly(contact.nextFollowUpOn);
+      const at = day ? new Date(day + 'T00:00:00').getTime() : NaN;
+      return Number.isFinite(at) && at <= windowEnd && at >= windowStart;
+    })
+    .sort((a, b) => dayOnly(a.nextFollowUpOn).localeCompare(dayOnly(b.nextFollowUpOn)));
+}
+
+function renderTogetherDash() {
+  const host = $('#togetherDash');
+  if (!host) return;
+  const note = $('#togetherDashNote');
+
+  if (!cloudReady()) {
+    if (note) note.textContent = 'Sign in to coordinate with your kniggurs';
+    host.innerHTML =
+      '<article class="together-dash-card">' +
+        '<div class="together-dash-card-head"><strong>Together</strong></div>' +
+        '<p class="together-dash-copy">Sign in to share tasks, projects, learning, and follow-ups with a circle.</p>' +
+        '<button class="btn primary small" type="button" data-page-target="settings">Sign in or create an account</button>' +
+      '</article>';
+    return;
+  }
+
+  const due = togetherDashDueTasks();
+  const projectTargets = togetherDashProjectTargets();
+  const followUps = togetherDashFollowUps();
+  const open = state.space.tasks.filter((task) => task.status !== 'done').length;
+  const contacts = state.space.contacts.length;
+  const circles = state.space.circles;
+
+  if (note) {
+    note.textContent = state.space.loaded
+      ? open + (open === 1 ? ' open task' : ' open tasks') + ' · ' +
+        (contacts ? contacts + (contacts === 1 ? ' contact' : ' contacts') + ' · ' : '') +
+        (followUps.length ? followUps.length + (followUps.length === 1 ? ' follow-up' : ' follow-ups') + ' · ' : '') +
+        (circles.length ? circles.length + (circles.length === 1 ? ' circle' : ' circles') : 'Just me')
+      : 'Loading your shared space…';
+  }
+
+  const dueRows = due.slice(0, 3)
+    .map((task) =>
+      '<button class="together-dash-row" type="button" data-cal-task-open="' + escapeHtml(task.id) + '">' +
+        '<span class="together-dash-when">' + escapeHtml(relativeDay(task.dueAt)) + '</span>' +
+        '<span class="together-dash-main">' +
+          '<strong>' + escapeHtml(task.title) + '</strong>' +
+          '<span>' + escapeHtml(task.circleId ? circleName(task.circleId) : 'Just me') +
+            (task.assigneeId ? ' · ' + escapeHtml(personName(task.assigneeId)) : '') +
+          '</span>' +
+        '</span>' +
+      '</button>'
+    )
+    .concat(projectTargets.slice(0, 3).map((project) =>
+      '<button class="together-dash-row" type="button" data-project-open="' + escapeHtml(project.id) + '">' +
+        '<span class="together-dash-when">' + escapeHtml(relativeDay(dayOnly(project.targetOn) + 'T00:00:00')) + '</span>' +
+        '<span class="together-dash-main">' +
+          '<strong>' + escapeHtml(project.name) + '</strong>' +
+          '<span>Project target · ' + escapeHtml(project.circleId ? circleName(project.circleId) : 'Just me') + '</span>' +
+        '</span>' +
+      '</button>'
+    ))
+    .concat(followUps.slice(0, 3).map((contact) =>
+      '<button class="together-dash-row" type="button" data-together-open-contact="' + escapeHtml(contact.id) + '">' +
+        '<span class="together-dash-when">' + escapeHtml(relativeDay(dayOnly(contact.nextFollowUpOn) + 'T00:00:00')) + '</span>' +
+        '<span class="together-dash-main">' +
+          '<strong>Follow up: ' + escapeHtml(contact.name) + '</strong>' +
+          '<span>' + escapeHtml(contactScopeLabel(contact)) +
+            (contact.company ? ' · ' + escapeHtml(contact.company) : '') + '</span>' +
+          '</span>' +
+        '</button>'
+    ))
+    .join('') || '<div class="event-empty">Nothing due today or overdue</div>';
+
+  const circleRows = circles.length
+    ? circles.slice(0, 3).map((circle) => {
+        const members = circleMembers(circle.id).length;
+        return '<button class="together-dash-row" type="button" data-together-open-circle="' + escapeHtml(circle.id) + '">' +
+          '<span class="together-dash-main">' +
+            '<strong>' + escapeHtml(circle.name) + '</strong>' +
+            '<span>' + members + (members === 1 ? ' member' : ' members') + '</span>' +
+          '</span>' +
+        '</button>';
+      }).join('')
+    : '<div class="event-empty">No circles yet — create one in Together</div>';
+
+  const tabButtons = TOGETHER_TABS.map((tab) =>
+    '<button class="btn ghost small" type="button" data-together-open-tab="' + tab + '">' +
+      escapeHtml(tab === 'crm' ? 'CRM' : tab[0].toUpperCase() + tab.slice(1)) +
+    '</button>'
+  ).join('');
+
+  host.innerHTML =
+    '<article class="together-dash-card">' +
+      '<div class="together-dash-card-head"><strong>Today</strong><span class="chart-note">' +
+        (due.length + projectTargets.length + followUps.length) + '</span></div>' +
+      dueRows +
+    '</article>' +
+    '<article class="together-dash-card">' +
+      '<div class="together-dash-card-head"><strong>Circles</strong><span class="chart-note">' + circles.length + '</span></div>' +
+      circleRows +
+    '</article>' +
+    '<article class="together-dash-card">' +
+      '<div class="together-dash-card-head"><strong>Plan together</strong></div>' +
+      '<div class="together-dash-tabs">' + tabButtons + '</div>' +
+    '</article>';
+}
+
+function refreshDashboardSpace() {
+  if (currentPage !== 'dashboard') return;
+  renderTogetherDash();
+  refreshDashboardInsights();
 }
 
 function statusBadge(status) {
@@ -1794,21 +2117,40 @@ function eventRowHtml(app, event, options = {}) {
     '</div>';
 }
 
+function renderCalScopeFilter() {
+  const select = $('#calScopeFilter');
+  if (!select) return;
+
+  select.innerHTML = '<option value="all">All sources</option>' +
+    '<option value="me">Just mine</option>' +
+    state.space.circles.map((circle) => (
+      '<option value="' + escapeHtml(circle.id) + '">' + escapeHtml(circle.name) + '</option>'
+    )).join('');
+
+  if (calendarScope !== 'all' && calendarScope !== 'me' &&
+      !state.space.circles.some((circle) => circle.id === calendarScope)) {
+    calendarScope = 'all';
+  }
+  select.value = calendarScope;
+}
+
 function renderCalendar() {
   const grid = $('#calDays');
   if (!grid) return;
 
+  renderCalScopeFilter();
+
   const month = calendarState.month;
-  const events = allEvents();
+  const items = calendarVisibleItems();
   const byDay = new Map();
-  events.forEach(({ app, event }) => {
-    const key = dayKey(event.at);
+  items.forEach((item) => {
+    const key = dayKey(item.at);
     if (!byDay.has(key)) byDay.set(key, []);
-    byDay.get(key).push({ app, event });
+    byDay.get(key).push(item);
   });
 
-  const monthEvents = events.filter(({ event }) => {
-    const date = new Date(event.at);
+  const monthItems = items.filter((item) => {
+    const date = new Date(item.at);
     return date.getFullYear() === month.getFullYear() && date.getMonth() === month.getMonth();
   });
 
@@ -1816,9 +2158,9 @@ function renderCalendar() {
   if (monthEl) monthEl.textContent = month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const countEl = $('#calEventCount');
   if (countEl) {
-    countEl.textContent = monthEvents.length
-      ? monthEvents.length + (monthEvents.length === 1 ? ' event' : ' events')
-      : 'No events';
+    countEl.textContent = monthItems.length
+      ? monthItems.length + (monthItems.length === 1 ? ' item' : ' items')
+      : 'No items';
   }
 
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
@@ -1831,24 +2173,27 @@ function renderCalendar() {
     const date = new Date(start);
     date.setDate(start.getDate() + index);
     const key = dayKey(date);
-    const dayEvents = byDay.get(key) || [];
+    const dayItems = byDay.get(key) || [];
     const classes = ['cal-day'];
     if (date.getMonth() !== month.getMonth()) classes.push('out');
     if (key === todayKey) classes.push('today');
     if (key === calendarState.selected) classes.push('selected');
 
-    const dots = dayEvents.slice(0, 3)
-      .map(({ event }) => '<span class="cal-dot' + (event.kind === 'reminder' ? ' reminder' : '') + '"></span>')
+    const dots = dayItems.slice(0, 3)
+      .map((item) => '<span class="cal-dot' +
+        (item.source === 'task' ? ' task' : item.source === 'crm' ? ' crm' :
+          item.source === 'project' ? ' project' : item.kind === 'reminder' ? ' reminder' : '') +
+        (item.done ? ' done' : '') + '"></span>')
       .join('');
-    const more = dayEvents.length > 3
-      ? '<span class="cal-more">+' + (dayEvents.length - 3) + '</span>'
+    const more = dayItems.length > 3
+      ? '<span class="cal-more">+' + (dayItems.length - 3) + '</span>'
       : '';
     const label = date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
     cells += '<button type="button" class="' + classes.join(' ') + '" data-cal-day="' + key + '" ' +
-      'aria-label="' + escapeHtml(label + (dayEvents.length ? ', ' + dayEvents.length + ' events' : '')) + '">' +
+      'aria-label="' + escapeHtml(label + (dayItems.length ? ', ' + dayItems.length + ' items' : '')) + '">' +
       '<span class="cal-day-num">' + date.getDate() + '</span>' +
-      (dayEvents.length ? '<span class="cal-dots">' + dots + more + '</span>' : '') +
+      (dayItems.length ? '<span class="cal-dots">' + dots + more + '</span>' : '') +
       '</button>';
   }
   grid.innerHTML = cells;
@@ -1861,40 +2206,40 @@ function renderCalendar() {
       : selectedDate.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   }
 
-  const dayEvents = byDay.get(calendarState.selected) || [];
+  const dayItems = byDay.get(calendarState.selected) || [];
   const selectedCount = $('#calSelectedCount');
   if (selectedCount) {
-    selectedCount.textContent = dayEvents.length
-      ? dayEvents.length + (dayEvents.length === 1 ? ' event' : ' events')
+    selectedCount.textContent = dayItems.length
+      ? dayItems.length + (dayItems.length === 1 ? ' item' : ' items')
       : '';
   }
 
   const dayList = $('#calDayList');
   if (dayList) {
-    dayList.innerHTML = dayEvents.length
-      ? dayEvents.map(({ app, event }) => eventRowHtml(app, event)).join('')
+    dayList.innerHTML = dayItems.length
+      ? dayItems.map((item) => scheduleRowHtml(item)).join('')
       : '<div class="event-empty">Nothing scheduled this day</div>';
   }
 
   const now = Date.now();
   const horizon = startOfDay(new Date()).getTime() + 30 * DAY_MS;
-  const upcoming = events.filter(({ event }) => {
-    const at = new Date(event.at).getTime();
+  const upcoming = items.filter((item) => {
+    const at = new Date(item.at).getTime();
     return at >= now && at <= horizon;
   });
 
   const upcomingHost = $('#calUpcoming');
   if (upcomingHost) {
     upcomingHost.innerHTML = upcoming.length
-      ? upcoming.slice(0, 6).map(({ app, event }) => eventRowHtml(app, event, { withDay: true })).join('')
-      : '<div class="event-empty">No interviews or reminders in the next 30 days</div>';
+      ? upcoming.slice(0, 6).map((item) => scheduleRowHtml(item, { withDay: true })).join('')
+      : '<div class="event-empty">No tasks, interviews, or reminders in the next 30 days</div>';
   }
 
   const foot = $('#calFoot');
   if (foot) {
     foot.textContent = upcoming.length
-      ? upcoming.length + (upcoming.length === 1 ? ' event' : ' events') + ' in the next 30 days'
-      : 'Open any application to add an interview or reminder';
+      ? upcoming.length + (upcoming.length === 1 ? ' item' : ' items') + ' in the next 30 days'
+      : 'Add a task or an interview to see it here';
   }
 }
 
@@ -5090,6 +5435,7 @@ function renderAccount() {
 
   if (statusLine) statusLine.classList.toggle('on', ok);
   if (statusText) statusText.textContent = cloudStatusText();
+  renderTogetherBadge();
 }
 
 function renderSettings() {
@@ -5113,6 +5459,10 @@ function renderSettings() {
   }
 
   renderNotifyStatus();
+
+  const dashToggle = $('#dashInsightsToggle');
+  if (dashToggle) dashToggle.checked = dashInsights;
+
   renderAccount();
 }
 
@@ -5231,7 +5581,7 @@ function resetSocial() {
     unreadMessages: 0
   };
   renderFriendsBadge();
-  if (currentPage === 'friends') renderFriends();
+  if (currentPage === 'together') renderFriends();
 }
 
 function socialList(value) {
@@ -5243,7 +5593,7 @@ function socialUnreadTotal() {
 }
 
 function socialThreadFocused() {
-  if (currentPage !== 'friends') return false;
+  if (currentPage !== 'together' || togetherTab !== 'kniggurs') return false;
   const active = document.activeElement;
   if (!active || !active.matches('[data-share-reply-input]')) return false;
   // Only protect a reply that actually contains text; an empty, focused box can
@@ -5252,11 +5602,9 @@ function socialThreadFocused() {
 }
 
 function renderFriendsBadge() {
-  const badge = $('#friendsBadge');
-  if (!badge) return;
-  const count = socialUnreadTotal();
-  badge.textContent = count > 9 ? '9+' : String(count);
-  badge.hidden = !cloudReady() || count === 0;
+  // One rail entry now covers Together and kniggurs, so the unread count
+  // shares the Together badge instead of a second badge on the icon.
+  renderTogetherBadge();
 }
 
 /**
@@ -5340,6 +5688,7 @@ async function loadSocial(options = {}) {
     // typing; the next refresh carries the new data instead.
     if (silent && socialThreadFocused()) return;
     renderFriends();
+    if (currentPage === 'together' && !togetherEditing()) renderTogether();
   } catch (err) {
     if (generation !== socialGeneration) return;
     if (isAuthRequired(err)) {
@@ -5349,6 +5698,7 @@ async function loadSocial(options = {}) {
     state.social.status = 'error';
     state.social.error = err.message || 'Could not load kniggurs';
     if (!silent) renderFriends();
+    if (currentPage === 'together' && !togetherEditing()) renderTogether();
   } finally {
     socialInFlight = false;
   }
@@ -5730,7 +6080,7 @@ function patchShareRead(shareId) {
   share.readAt = new Date().toISOString();
   state.social.unread = Math.max(0, (state.social.unread || 0) - 1);
   renderFriendsBadge();
-  if (currentPage === 'friends') renderFriends();
+  if (currentPage === 'together') renderFriends();
 }
 
 async function markShareRead(shareId) {
@@ -5745,7 +6095,7 @@ async function markShareRead(shareId) {
 async function markShareSaved(shareId) {
   const share = (state.social.inbox || []).find((entry) => entry.id === shareId);
   if (share) share.status = 'saved';
-  if (currentPage === 'friends') renderFriends();
+  if (currentPage === 'together') renderFriends();
   try {
     await api('/shares/' + encodeURIComponent(shareId) + '/saved', { method: 'POST' });
   } catch {
@@ -5912,7 +6262,8 @@ async function openShareModal(prefill = {}) {
   const friends = state.social.friends || [];
   if (!friends.length) {
     toast('Add a kniggur first, then send them a job', 'error');
-    showPage('friends');
+    togetherTab = 'kniggurs';
+    showPage('together');
     return;
   }
 
@@ -6016,6 +6367,2326 @@ function shareCurrentApplication() {
   });
 }
 
+// ---------------------------------------------------------------- Together
+
+const TOGETHER_TABS = ['todos', 'kniggurs', 'projects', 'learning', 'shelf', 'crm'];
+const SHELF_CATEGORY_SUGGESTIONS = [
+  'Fiction', 'Business', 'Design', 'Science', 'Biography',
+  'Self-development', 'History', 'Poetry'
+];
+const TOGETHER_PLACEHOLDER = {
+  learning: 'Learning tracks arrive in phase 3: a language or skill, with a progress bar each.'
+};
+
+let togetherScope = 'me';
+let togetherTab = 'todos';
+let togetherListId = 'all';
+let shelfFilter = 'all';
+let shelfCategory = 'all';
+let editingBookLinkId = null;
+let crmStageFilter = 'all';
+let crmSearch = '';
+let contactModalId = null;
+let calendarScope = localStorage.getItem(STORE.calScope) || 'all';
+let spaceLoading = false;
+let spaceGeneration = 0;
+
+function resetSpace() {
+  state.space = {
+    status: 'off',
+    error: '',
+    loaded: false,
+    circles: [],
+    members: [],
+    taskLists: [],
+    projects: [],
+    tasks: [],
+    books: [],
+    shelfCategories: [],
+    contacts: [],
+    contactNotes: [],
+    people: {}
+  };
+  spaceGeneration += 1;
+  spaceLoading = false;
+  togetherScope = 'me';
+  togetherTab = 'todos';
+  togetherListId = 'all';
+  shelfFilter = 'all';
+  shelfCategory = 'all';
+  editingBookLinkId = null;
+  renderTogetherBadge();
+  refreshDashboardSpace();
+}
+
+function spaceCacheKey() {
+  const id = (state.cloud.user && state.cloud.user.id) || 'anon';
+  return STORE.space + '_' + id;
+}
+
+function readSpaceCache() {
+  const cached = loadJSON(spaceCacheKey(), null);
+  if (!cached || !Array.isArray(cached.tasks)) return;
+  applySpace(cached);
+  state.space.status = 'ready';
+  state.space.loaded = true;
+  renderTogetherBadge();
+  refreshDashboardSpace();
+}
+
+function cacheSpace() {
+  try {
+    localStorage.setItem(spaceCacheKey(), JSON.stringify({
+      circles: state.space.circles,
+      members: state.space.members,
+      taskLists: state.space.taskLists,
+      projects: state.space.projects,
+      tasks: state.space.tasks,
+      books: state.space.books,
+      shelfCategories: state.space.shelfCategories,
+      contacts: state.space.contacts,
+      contactNotes: state.space.contactNotes,
+      people: state.space.people,
+      cachedAt: new Date().toISOString()
+    }));
+  } catch (err) {
+    // The cache is a convenience; a full quota must not break the page.
+  }
+}
+
+function applySpace(data) {
+  state.space.circles = Array.isArray(data && data.circles) ? data.circles : [];
+  state.space.members = Array.isArray(data && data.members) ? data.members : [];
+  state.space.taskLists = Array.isArray(data && data.taskLists) ? data.taskLists : [];
+  state.space.projects = Array.isArray(data && data.projects) ? data.projects : [];
+  state.space.tasks = Array.isArray(data && data.tasks) ? data.tasks : [];
+  state.space.books = Array.isArray(data && data.books) ? data.books : [];
+  state.space.shelfCategories = Array.isArray(data && data.shelfCategories) ? data.shelfCategories : [];
+  state.space.contacts = Array.isArray(data && data.contacts) ? data.contacts : [];
+  state.space.contactNotes = Array.isArray(data && data.contactNotes) ? data.contactNotes : [];
+  state.space.people = data && data.people && typeof data.people === 'object' ? data.people : {};
+  state.space.loaded = true;
+
+  if (togetherScope !== 'me' && !state.space.circles.some((circle) => circle.id === togetherScope)) {
+    togetherScope = 'me';
+    togetherListId = 'all';
+  }
+}
+
+async function loadSpace(options = {}) {
+  if (!cloudReady() || spaceLoading) return;
+  spaceLoading = true;
+  const generation = spaceGeneration;
+
+  if (!options.silent && !state.space.loaded) {
+    state.space.status = 'loading';
+    if (currentPage === 'together') renderTogether();
+    if (currentPage === 'dashboard') renderTogetherDash();
+  }
+
+  try {
+    const data = await api('/space');
+    if (generation !== spaceGeneration) return;
+    applySpace(data);
+    state.space.status = 'ready';
+    state.space.error = '';
+    cacheSpace();
+    renderTogetherBadge();
+    if (currentPage === 'together' && !(options.silent && togetherEditing())) renderTogether();
+    if (currentPage === 'calendar') renderCalendar();
+    if (currentPage === 'dashboard') {
+      refreshDashboardSpace();
+      refreshDashboardInsights();
+    }
+  } catch (err) {
+    if (generation !== spaceGeneration) return;
+    if (isAuthRequired(err)) {
+      handleAuthRequired();
+      return;
+    }
+    state.space.status = 'error';
+    state.space.error = err.message || 'Could not load Together';
+    if (currentPage === 'together') renderTogether();
+  } finally {
+    if (generation === spaceGeneration) spaceLoading = false;
+  }
+}
+
+async function spaceRequest(path, options = {}) {
+  try {
+    return await api(path, options);
+  } catch (err) {
+    if (isAuthRequired(err)) {
+      handleAuthRequired();
+      return null;
+    }
+    toast(
+      err.status === 409
+        ? 'Someone changed that first — showing their version.'
+        : err.message || 'Could not save that',
+      'error'
+    );
+    await loadSpace({ silent: true });
+    return null;
+  }
+}
+
+function findSpaceTask(id) {
+  return state.space.tasks.find((task) => task.id === id) || null;
+}
+
+function findSpaceList(id) {
+  return state.space.taskLists.find((list) => list.id === id) || null;
+}
+
+function circleById(id) {
+  return state.space.circles.find((circle) => circle.id === id) || null;
+}
+
+function circleName(id) {
+  const circle = circleById(id);
+  return circle ? circle.name : 'Circle';
+}
+
+function circleMembers(id) {
+  return state.space.members.filter((member) => member.circleId === id);
+}
+
+function personName(id) {
+  if (!id) return 'Anyone';
+  if (state.cloud.user && id === state.cloud.user.id) {
+    const me = state.space.people[id];
+    return (me && (me.name || me.email)) || firstName(state.profile.name) || 'You';
+  }
+  const person = state.space.people[id];
+  return (person && (person.name || person.email)) || 'A kniggur';
+}
+
+function inSpaceScope(row) {
+  return togetherScope === 'me' ? !row.circleId : row.circleId === togetherScope;
+}
+
+function scopeTasks() {
+  return state.space.tasks.filter(inSpaceScope);
+}
+
+function scopeLists() {
+  return state.space.taskLists.filter(inSpaceScope);
+}
+
+function scopeProjects() {
+  return (state.space.projects || []).filter(inSpaceScope);
+}
+
+function scopeBooks() {
+  return (state.space.books || []).filter(inSpaceScope);
+}
+
+function scopeCategories() {
+  return (state.space.shelfCategories || []).filter(inSpaceScope);
+}
+
+function scopeContacts() {
+  return (state.space.contacts || []).filter(inSpaceScope);
+}
+
+function findContact(id) {
+  return (state.space.contacts || []).find((contact) => contact.id === id) || null;
+}
+
+function contactNotes(contactId) {
+  return (state.space.contactNotes || [])
+    .filter((note) => note.contactId === contactId)
+    .sort((a, b) => {
+      const left = String(a.happenedOn || '');
+      const right = String(b.happenedOn || '');
+      if (left !== right) return right.localeCompare(left);
+      return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+}
+
+function contactScopeLabel(contact) {
+  return contact.circleId ? circleName(contact.circleId) : 'Just me';
+}
+
+function contactInitials(name) {
+  return initials(name || '?');
+}
+
+function canEditContact(contact) {
+  if (!contact || !cloudReady()) return false;
+  const me = state.cloud.user && state.cloud.user.id;
+  if (contact.ownerId === me) return true;
+  return Boolean(contact.circleId && circleById(contact.circleId));
+}
+
+function canMoveContact(contact) {
+  return Boolean(contact && cloudReady() && contact.ownerId === (state.cloud.user && state.cloud.user.id));
+}
+
+function canDeleteContactNote(contact, note) {
+  const me = state.cloud.user && state.cloud.user.id;
+  if (!contact || !note || !me) return false;
+  if (note.authorId === me) return true;
+  if (contact.ownerId === me) return true;
+  const circle = contact.circleId ? circleById(contact.circleId) : null;
+  return Boolean(circle && (circle.role === 'owner' || circle.ownerId === me));
+}
+
+function contactStageOptions(selected) {
+  return [
+    ['lead', 'Lead'],
+    ['talking', 'Talking'],
+    ['active', 'Active'],
+    ['dormant', 'Dormant']
+  ].map(([value, label]) => (
+    '<option value="' + value + '"' + (selected === value ? ' selected' : '') + '>' + label + '</option>'
+  )).join('');
+}
+
+function contactTagsText(contact) {
+  return (contact.tags || []).join(', ');
+}
+
+function scopeCircleId() {
+  return togetherScope === 'me' ? null : togetherScope;
+}
+
+function canManageShelfCategories() {
+  if (!cloudReady()) return false;
+  if (togetherScope === 'me') return true;
+  const circle = circleById(togetherScope);
+  const me = state.cloud.user && state.cloud.user.id;
+  return Boolean(circle && (circle.role === 'owner' || circle.ownerId === me));
+}
+
+function upsertSpaceRow(collection, row) {
+  const list = state.space[collection] || [];
+  const index = list.findIndex((entry) => entry.id === row.id);
+  if (index >= 0) list[index] = row;
+  else list.push(row);
+}
+
+function dropSpaceRow(collection, id) {
+  state.space[collection] = (state.space[collection] || []).filter((entry) => entry.id !== id);
+}
+
+function refreshSpaceViews() {
+  cacheSpace();
+  renderTogetherBadge();
+  if (currentPage === 'together') renderTogether();
+  if (currentPage === 'calendar') renderCalendar();
+  if (currentPage === 'dashboard') {
+    refreshDashboardSpace();
+    refreshDashboardInsights();
+  }
+  const projectModal = $('#projectModal');
+  if (projectModal && !projectModal.hidden) renderProjectModal();
+}
+
+// A silent poll must not wipe an unsaved task title, note, due date, or
+// assignee. The data still updates; the next render carries it.
+function togetherEditing() {
+  const active = document.activeElement;
+  const page = $('#togetherPage');
+  if (!active || !page || !page.contains(active)) return false;
+  return Boolean(active.closest('input, textarea, select'));
+}
+
+function renderTogetherBadge() {
+  const badge = $('#togetherBadge');
+  if (!badge) return;
+  const tomorrow = startOfDay(new Date()).getTime() + DAY_MS;
+  const taskCount = cloudReady()
+    ? state.space.tasks.filter((task) => {
+        if (task.status === 'done' || !task.dueAt) return false;
+        const at = new Date(task.dueAt).getTime();
+        return Number.isFinite(at) && at < tomorrow;
+      }).length
+    : 0;
+  const followUpCount = cloudReady()
+    ? togetherDashFollowUps().length
+    : 0;
+  const socialCount = cloudReady() ? socialUnreadTotal() : 0;
+  const count = taskCount + followUpCount + socialCount;
+  badge.textContent = String(count);
+  badge.hidden = !cloudReady() || count === 0;
+}
+
+function setTogetherScope(scope) {
+  togetherScope = scope === 'me' || circleById(scope) ? scope : 'me';
+  togetherListId = 'all';
+  const tray = $('#circleSettingsTray');
+  if (tray) tray.hidden = true;
+  editingBookLinkId = null;
+  renderTogether();
+}
+
+function setTogetherTab(tab) {
+  togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'todos';
+  renderTogetherTabs();
+}
+function renderTogether() {
+  const signedOut = $('#togetherSignedOut');
+  const signedIn = $('#togetherSignedIn');
+  const actions = $('#togetherActions');
+  const summary = $('#togetherSummary');
+  const ready = cloudReady();
+
+  if (signedOut) signedOut.hidden = ready;
+  if (signedIn) signedIn.hidden = !ready;
+  if (actions) actions.hidden = !ready;
+
+  if (!ready) {
+    if (summary) summary.textContent = 'Sign in to plan with your kniggurs';
+    renderTogetherBadge();
+    return;
+  }
+
+  renderTogetherScope();
+  renderTogetherTabs();
+  renderCircleCard();
+  renderTodos();
+  renderProjects();
+  renderShelf();
+  renderCrm();
+  // The kniggurs tab lives in this page. A quiet poll must not repaint a
+  // reply the person is in the middle of typing.
+  if (!socialThreadFocused()) renderFriends();
+
+  const circle = togetherScope === 'me' ? null : circleById(togetherScope);
+  const open = scopeTasks().filter((task) => task.status !== 'done').length;
+  if (summary) {
+    if (state.space.status === 'loading' && !state.space.loaded) {
+      summary.textContent = 'Loading your space…';
+    } else if (state.space.status === 'error') {
+      summary.textContent = state.space.error;
+    } else if (!state.space.loaded) {
+      summary.textContent = 'Loading your space…';
+    } else if (circle) {
+      const members = circleMembers(circle.id).length;
+      summary.textContent = circle.name + ' · ' + members + (members === 1 ? ' member' : ' members') +
+        ' · ' + open + (open === 1 ? ' open task' : ' open tasks');
+    } else {
+      const circles = state.space.circles.length;
+      const projects = scopeProjects().length;
+      const contacts = scopeContacts().length;
+      const projectText = projects
+        ? (projects === 1 ? ' · 1 project' : ' · ' + projects + ' projects')
+        : '';
+      const contactText = contacts
+        ? (contacts === 1 ? ' · 1 contact' : ' · ' + contacts + ' contacts')
+        : '';
+      summary.textContent = 'Just me · ' + open + (open === 1 ? ' open task' : ' open tasks') + projectText +
+        (circles ? ' · ' + circles + (circles === 1 ? ' circle' : ' circles') : '') + contactText;
+    }
+  }
+
+  renderTogetherBadge();
+}
+
+function renderTogetherScope() {
+  const select = $('#togetherScope');
+  if (!select) return;
+
+  select.innerHTML = '<option value="me">Just me</option>' +
+    state.space.circles.map((circle) => (
+      '<option value="' + escapeHtml(circle.id) + '">' + escapeHtml(circle.name) + '</option>'
+    )).join('');
+
+  if (togetherScope !== 'me' && !circleById(togetherScope)) togetherScope = 'me';
+  select.value = togetherScope;
+}
+
+function renderTogetherTabs() {
+  $$('[data-together-tab]').forEach((tab) => {
+    const active = tab.dataset.togetherTab === togetherTab;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  const todos = $('#togetherTodos');
+  const kniggurs = $('#togetherKniggurs');
+  const projects = $('#togetherProjects');
+  const shelf = $('#togetherShelf');
+  const crm = $('#togetherCrm');
+  const placeholder = $('#togetherPlaceholder');
+  if (todos) todos.hidden = togetherTab !== 'todos';
+  if (kniggurs) kniggurs.hidden = togetherTab !== 'kniggurs';
+  if (projects) projects.hidden = togetherTab !== 'projects';
+  if (shelf) shelf.hidden = togetherTab !== 'shelf';
+  if (crm) crm.hidden = togetherTab !== 'crm';
+  if (placeholder) {
+    const isPlaceholder = togetherTab !== 'todos' && togetherTab !== 'kniggurs' &&
+      togetherTab !== 'projects' && togetherTab !== 'shelf' && togetherTab !== 'crm';
+    placeholder.hidden = !isPlaceholder;
+    const copy = TOGETHER_PLACEHOLDER[togetherTab];
+    if (copy && isPlaceholder) {
+      placeholder.innerHTML = '<p><strong>' + escapeHtml(togetherTab[0].toUpperCase() + togetherTab.slice(1)) +
+        '</strong> is not live yet.</p><p>' + escapeHtml(copy) + '</p>';
+    }
+  }
+}
+
+function renderCircleCard() {
+  const tray = $('#circleSettingsTray');
+  const card = $('#circleCard');
+  const gear = $('#circleSettingsBtn');
+  const circle = togetherScope === 'me' ? null : circleById(togetherScope);
+
+  if (gear) {
+    gear.hidden = !circle;
+    gear.disabled = !circle;
+    gear.setAttribute('aria-disabled', String(!circle));
+  }
+
+  if (!circle) {
+    if (tray) tray.hidden = true;
+    if (card) card.hidden = true;
+    return;
+  }
+
+  if (card) card.hidden = false;
+
+  const me = state.cloud.user && state.cloud.user.id;
+  const members = circleMembers(circle.id);
+  const isOwner = circle.role === 'owner' || circle.ownerId === me;
+
+  const title = $('#circleTitle');
+  if (title) title.textContent = circle.name;
+  const meta = $('#circleMeta');
+  if (meta) {
+    meta.textContent = isOwner
+      ? (members.length === 1 ? 'You own this circle · just you so far' : 'You own this circle')
+      : 'Owned by ' + personName(circle.ownerId);
+  }
+
+  const host = $('#circleMembers');
+  if (host) {
+    host.innerHTML = members.map((member) => {
+      const self = member.userId === me;
+      const canRemove = self ? !isOwner : isOwner;
+      const detail = member.role === 'owner' ? 'Owner' : (self ? 'You' : 'Member');
+      return '<div class="social-person">' +
+        '<span class="social-avatar" aria-hidden="true">' + escapeHtml(initials(personName(member.userId))) + '</span>' +
+        '<div class="social-person-main">' +
+          '<strong>' + escapeHtml(personName(member.userId)) + '</strong>' +
+          '<span>' + escapeHtml(detail) + '</span>' +
+        '</div>' +
+        (canRemove
+          ? '<div class="social-person-actions"><button class="btn ghost small" type="button" data-circle-remove="' +
+              escapeHtml(member.userId) + '">' + (self ? 'Leave' : 'Remove') + '</button></div>'
+          : '') +
+      '</div>';
+    }).join('');
+  }
+
+  const addWrap = $('#circleAddWrap');
+  if (addWrap) {
+    if (!isOwner) {
+      addWrap.innerHTML = '<p class="field-help">Only the owner can add kniggurs to this circle.</p>';
+    } else {
+      const memberIds = new Set(members.map((member) => member.userId));
+      const candidates = (state.social.friends || []).filter((friend) => !memberIds.has(friend.id));
+      addWrap.innerHTML = candidates.length
+        ? '<form id="circleAddForm" class="friend-add-row" autocomplete="off">' +
+            '<select id="circleAddSelect" aria-label="Kniggur to add">' +
+              candidates.map((friend) => (
+                '<option value="' + escapeHtml(friend.id) + '">' +
+                  escapeHtml(friend.name || friend.email || 'Kniggur') + '</option>'
+              )).join('') +
+            '</select>' +
+            '<button class="btn primary small" type="submit">Add</button>' +
+          '</form>' +
+          '<p class="field-help">Only your kniggurs can join a circle.</p>'
+        : '<p class="field-help">' +
+            (state.social.status === 'ready'
+              ? 'Add a kniggur on the Kniggurs page first, then come back.'
+              : 'Loading your kniggurs…') +
+          '</p>';
+    }
+  }
+
+  const exit = $('#circleExitBtn');
+  if (exit) {
+    exit.hidden = false;
+    exit.textContent = isOwner ? 'Delete circle' : 'Leave circle';
+    exit.dataset.circleExit = circle.id;
+  }
+}
+
+function showCircleSettingsPanel() {
+  const tray = $('#circleSettingsTray');
+  if (tray) tray.hidden = false;
+}
+
+function hideCircleSettingsPanel() {
+  const tray = $('#circleSettingsTray');
+  if (tray) tray.hidden = true;
+}
+
+function renderTodos() {
+  const listHost = $('#spaceLists');
+  const taskHost = $('#spaceTasks');
+  if (!listHost || !taskHost) return;
+
+  const lists = scopeLists();
+  const projects = scopeProjects();
+  const tasks = scopeTasks();
+  const open = tasks.filter((task) => task.status !== 'done').length;
+
+  const listCount = $('#spaceListCount');
+  if (listCount) listCount.textContent = lists.length + (lists.length === 1 ? ' list' : ' lists');
+  const taskCount = $('#spaceTaskCount');
+  if (taskCount) {
+    taskCount.textContent = tasks.length
+      ? open + ' open · ' + tasks.length + ' total'
+      : 'Nothing yet';
+  }
+
+  const listRow = (id, name, count, extra = '') => (
+    '<div class="space-list-row">' +
+      '<button class="space-list' + (togetherListId === id ? ' active' : '') + '" type="button" data-space-list="' + escapeHtml(id) + '">' +
+        '<span class="space-list-name">' + escapeHtml(name) + '</span>' +
+        '<span class="space-list-count">' + count + '</span>' +
+      '</button>' +
+      extra +
+    '</div>'
+  );
+
+  listHost.innerHTML = [
+    listRow('all', 'All tasks', tasks.length),
+    ...lists.map((list) => listRow(
+      list.id,
+      list.name,
+      tasks.filter((task) => task.listId === list.id).length,
+      '<button class="space-list-del" type="button" data-list-delete="' + escapeHtml(list.id) +
+        '" title="Delete list" aria-label="Delete ' + escapeHtml(list.name) + '">×</button>'
+    )),
+    listRow('none', 'No list', tasks.filter((task) => !task.listId).length)
+  ].join('');
+
+  const listSelect = $('#taskListSelect');
+  if (listSelect) {
+    const selected = listSelect.value;
+    listSelect.innerHTML = '<option value="">No list</option>' +
+      lists.map((list) => '<option value="' + escapeHtml(list.id) + '">' + escapeHtml(list.name) + '</option>').join('');
+    if (selected && lists.some((list) => list.id === selected)) listSelect.value = selected;
+  }
+
+  const projectSelect = $('#taskProjectSelect');
+  if (projectSelect) {
+    const selected = projectSelect.value;
+    projectSelect.innerHTML = '<option value="">No project</option>' +
+      projects.map((project) => '<option value="' + escapeHtml(project.id) + '">' + escapeHtml(project.name) + '</option>').join('');
+    if (selected && projects.some((project) => project.id === selected)) projectSelect.value = selected;
+  }
+
+  const assignee = $('#taskAssignee');
+  if (assignee) {
+    if (togetherScope === 'me') {
+      assignee.hidden = true;
+      assignee.innerHTML = '';
+    } else {
+      assignee.hidden = false;
+      const members = circleMembers(togetherScope);
+      assignee.innerHTML = '<option value="">Anyone</option>' +
+        members.map((member) => (
+          '<option value="' + escapeHtml(member.userId) + '">' +
+            escapeHtml(personName(member.userId)) + (state.cloud.user && member.userId === state.cloud.user.id ? ' (you)' : '') +
+          '</option>'
+        )).join('');
+    }
+  }
+
+  const visible = tasks
+    .filter((task) => {
+      if (togetherListId === 'all') return true;
+      if (togetherListId === 'none') return !task.listId;
+      return task.listId === togetherListId;
+    })
+    .slice()
+    .sort((a, b) => {
+      const aDone = a.status === 'done';
+      const bDone = b.status === 'done';
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      const aAt = a.dueAt ? new Date(a.dueAt).getTime() : Number.POSITIVE_INFINITY;
+      const bAt = b.dueAt ? new Date(b.dueAt).getTime() : Number.POSITIVE_INFINITY;
+      if (aAt !== bAt) return aAt - bAt;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+  if (!visible.length) {
+    taskHost.innerHTML = '<div class="social-empty">' +
+      (tasks.length
+        ? 'Nothing in this list yet. Add a task above, or pick another list.'
+        : 'No tasks in this scope yet. Add one above; give it a due date and it shows up on your calendar.') +
+      '</div>';
+    return;
+  }
+
+  const members = togetherScope === 'me' ? [] : circleMembers(togetherScope);
+
+  taskHost.innerHTML = visible.map((task) => {
+    const done = task.status === 'done';
+    const list = task.listId ? findSpaceList(task.listId) : null;
+    const project = task.projectId ? findProject(task.projectId) : null;
+    const projectOptions = projects.length
+      ? '<select class="task-project" data-task-project="' + escapeHtml(task.id) + '" aria-label="Project">' +
+          '<option value="">No project</option>' +
+          projects.map((entry) => (
+            '<option value="' + escapeHtml(entry.id) + '"' + (task.projectId === entry.id ? ' selected' : '') + '>' +
+              escapeHtml(entry.name) +
+            '</option>'
+          )).join('') +
+        '</select>'
+      : (project ? '<span class="task-list-chip">' + escapeHtml(project.name) + '</span>' : '');
+    const assigneeOptions = members.length
+      ? '<select class="task-assignee" data-task-assignee="' + escapeHtml(task.id) + '" aria-label="Assignee">' +
+          '<option value="">Anyone</option>' +
+          members.map((member) => (
+            '<option value="' + escapeHtml(member.userId) + '"' + (task.assigneeId === member.userId ? ' selected' : '') + '>' +
+              escapeHtml(personName(member.userId)) +
+            '</option>'
+          )).join('') +
+        '</select>'
+      : '';
+
+    return '<article class="space-task' + (done ? ' is-done' : '') + '" id="spaceTask-' + escapeHtml(task.id) + '">' +
+      '<button class="task-check" type="button" data-task-toggle="' + escapeHtml(task.id) + '" aria-pressed="' + done + '" ' +
+        'aria-label="' + (done ? 'Reopen task' : 'Mark task done') + '">' + (done ? '✓' : '') + '</button>' +
+      '<div class="space-task-main">' +
+        '<input class="task-title-input" type="text" maxlength="240" data-task-title="' + escapeHtml(task.id) + '" ' +
+          'value="' + escapeHtml(task.title) + '" aria-label="Task title">' +
+        (task.notes ? '<p class="task-notes">' + escapeHtml(task.notes) + '</p>' : '') +
+        '<div class="task-meta">' +
+          '<span class="task-list-chip">' + escapeHtml(list ? list.name : 'No list') + '</span>' +
+          projectOptions +
+          '<label class="task-due"><span>Due</span>' +
+            '<input type="datetime-local" data-task-due="' + escapeHtml(task.id) + '" ' +
+              'value="' + (task.dueAt ? localInputValue(task.dueAt) : '') + '" aria-label="Due date">' +
+          '</label>' +
+          assigneeOptions +
+          (task.assigneeId && !members.length
+            ? '<span class="task-assignee-chip">' + escapeHtml(personName(task.assigneeId)) + '</span>'
+            : '') +
+          (task.circleId ? '<span class="task-circle-chip">' + escapeHtml(circleName(task.circleId)) + '</span>' : '') +
+        '</div>' +
+      '</div>' +
+      '<button class="task-del" type="button" data-task-delete="' + escapeHtml(task.id) + '" ' +
+        'title="Delete task" aria-label="Delete task">×</button>' +
+    '</article>';
+  }).join('');
+}
+
+// --- Projects: an outcome, a target date, milestones, and progress.
+
+const PROJECT_STATUS_LABEL = {
+  planning: 'Planning',
+  active: 'Active',
+  paused: 'Paused',
+  done: 'Done'
+};
+
+let projectModalId = null;
+
+function findProject(id) {
+  return (state.space.projects || []).find((project) => project.id === id) || null;
+}
+
+function projectTasks(projectId) {
+  return state.space.tasks.filter((task) => task.projectId === projectId);
+}
+
+function projectMilestones(projectId) {
+  return projectTasks(projectId).filter((task) => task.isMilestone);
+}
+
+function projectProgress(project) {
+  const tasks = projectTasks(project.id);
+  const milestones = tasks.filter((task) => task.isMilestone);
+  const basis = milestones.length ? milestones : tasks;
+  const done = basis.filter((task) => task.status === 'done').length;
+  return {
+    done,
+    total: basis.length,
+    percent: basis.length ? Math.round((done / basis.length) * 100) : 0,
+    milestones: milestones.length > 0
+  };
+}
+
+function projectStatusOptions(selected) {
+  return ['planning', 'active', 'paused', 'done'].map((value) => (
+    '<option value="' + value + '"' + (selected === value ? ' selected' : '') + '>' +
+      PROJECT_STATUS_LABEL[value] +
+    '</option>'
+  )).join('');
+}
+
+function projectStatusChip(status) {
+  const key = PROJECT_STATUS_LABEL[status] ? status : 'active';
+  return '<span class="project-status ' + key + '">' + PROJECT_STATUS_LABEL[key] + '</span>';
+}
+
+function projectTargetLabel(project) {
+  if (!project.targetOn) return 'No target date';
+  const overdue = dayOnly(project.targetOn) < dayKey(new Date()) && project.status !== 'done';
+  return '<span class="project-target' + (overdue ? ' is-overdue' : '') + '">Target ' +
+    escapeHtml(formatDay(project.targetOn)) + '</span>';
+}
+
+function projectMilestoneRow(task) {
+  const done = task.status === 'done';
+  return '<div class="project-milestone' + (done ? ' is-done' : '') + '">' +
+    '<button class="task-check" type="button" data-task-toggle="' + escapeHtml(task.id) + '" ' +
+      'aria-pressed="' + done + '" aria-label="' + (done ? 'Reopen milestone' : 'Mark milestone done') + '">' +
+      (done ? '✓' : '') +
+    '</button>' +
+    '<span class="project-milestone-title">' + escapeHtml(task.title) + '</span>' +
+    (task.dueAt ? '<span class="project-milestone-due">' + escapeHtml(formatDay(task.dueAt)) + '</span>' : '') +
+  '</div>';
+}
+
+function renderProjects() {
+  const host = $('#projectList');
+  if (!host) return;
+
+  const projects = scopeProjects().slice().sort((a, b) => {
+    const aDone = a.status === 'done' ? 1 : 0;
+    const bDone = b.status === 'done' ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
+    const aAt = a.targetOn ? new Date(dayOnly(a.targetOn) + 'T00:00:00').getTime() : Number.POSITIVE_INFINITY;
+    const bAt = b.targetOn ? new Date(dayOnly(b.targetOn) + 'T00:00:00').getTime() : Number.POSITIVE_INFINITY;
+    if (aAt !== bAt) return aAt - bAt;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+
+  const count = $('#projectCount');
+  if (count) {
+    const active = projects.filter((project) => project.status !== 'done').length;
+    count.textContent = projects.length
+      ? active + ' active · ' + projects.length + ' total'
+      : 'Nothing yet';
+  }
+
+  if (!projects.length) {
+    host.innerHTML = '<div class="social-empty">' +
+      'No projects in this scope yet. Start one with a name and target date; milestones then give it a progress bar.' +
+      '</div>';
+    return;
+  }
+
+  host.innerHTML = projects.map((project) => {
+    const progress = projectProgress(project);
+    const milestones = projectMilestones(project.id);
+    const tasks = projectTasks(project.id);
+    const checklist = milestones.length
+      ? milestones.slice(0, 6).map(projectMilestoneRow).join('') +
+        (milestones.length > 6 ? '<p class="field-help">+' + (milestones.length - 6) + ' more in the project</p>' : '')
+      : '<p class="field-help">No milestones yet. Progress follows its tasks.</p>';
+    const progressLabel = progress.milestones
+      ? progress.done + ' of ' + progress.total + (progress.total === 1 ? ' milestone' : ' milestones')
+      : (progress.total
+        ? progress.done + ' of ' + progress.total + (progress.total === 1 ? ' task' : ' tasks')
+        : 'No tasks yet');
+
+    return '<article class="project-card' + (project.status === 'done' ? ' is-done' : '') + '">' +
+      '<div class="project-card-head">' +
+        '<button class="project-open" type="button" data-project-open="' + escapeHtml(project.id) + '">' +
+          '<strong>' + escapeHtml(project.name) + '</strong>' +
+        '</button>' +
+        projectStatusChip(project.status) +
+        '<button class="task-del" type="button" data-project-delete="' + escapeHtml(project.id) + '" ' +
+          'title="Delete project" aria-label="Delete project">×</button>' +
+      '</div>' +
+      (project.summary ? '<p class="project-summary">' + escapeHtml(project.summary) + '</p>' : '') +
+      '<div class="project-meta">' +
+        projectTargetLabel(project) +
+        '<span>' + tasks.length + (tasks.length === 1 ? ' task' : ' tasks') + '</span>' +
+        (project.circleId ? '<span class="task-circle-chip">' + escapeHtml(circleName(project.circleId)) + '</span>' : '') +
+      '</div>' +
+      '<div class="project-progress" role="img" aria-label="' + progress.percent + '% complete">' +
+        '<span style="width: ' + progress.percent + '%"></span>' +
+      '</div>' +
+      '<div class="project-progress-label">' + escapeHtml(progressLabel) + ' · ' + progress.percent + '%</div>' +
+      '<div class="project-milestones">' + checklist + '</div>' +
+      '<button class="btn ghost small" type="button" data-project-open="' + escapeHtml(project.id) + '">Open project</button>' +
+    '</article>';
+  }).join('');
+}
+
+function openProjectModal(id) {
+  if (!findProject(id)) return;
+  projectModalId = id;
+  renderProjectModal();
+  const modal = $('#projectModal');
+  if (modal && modal.hidden) openModal(modal);
+}
+
+function renderProjectModal() {
+  const modal = $('#projectModal');
+  if (!modal || !projectModalId) return;
+  const project = findProject(projectModalId);
+  if (!project) {
+    closeModal(modal);
+    projectModalId = null;
+    return;
+  }
+
+  const title = $('#projectModalTitle');
+  if (title) title.textContent = project.name;
+  const sub = $('#projectModalSub');
+  if (sub) {
+    sub.textContent = [
+      project.circleId ? circleName(project.circleId) : 'Only you',
+      PROJECT_STATUS_LABEL[project.status] || 'Active'
+    ].join(' · ');
+  }
+
+  const fields = {
+    projectFormId: project.id,
+    projectFormVersion: project.version,
+    projectFormName: project.name,
+    projectFormSummary: project.summary || '',
+    projectFormTarget: project.targetOn ? dayOnly(project.targetOn) : ''
+  };
+  Object.entries(fields).forEach(([key, value]) => {
+    const input = $('#' + key);
+    if (input) input.value = value;
+  });
+  const status = $('#projectFormStatus');
+  if (status) status.innerHTML = projectStatusOptions(project.status);
+
+  const deleteBtn = $('#projectDeleteBtn');
+  if (deleteBtn) deleteBtn.dataset.projectDelete = project.id;
+
+  const milestoneCount = $('#projectMilestoneCount');
+  const milestones = projectMilestones(project.id);
+  if (milestoneCount) {
+    milestoneCount.textContent = milestones.length
+      ? milestones.filter((task) => task.status === 'done').length + ' of ' + milestones.length + ' done'
+      : 'No milestones';
+  }
+  const milestoneHost = $('#projectMilestones');
+  if (milestoneHost) {
+    milestoneHost.innerHTML = milestones.length
+      ? milestones.map(projectMilestoneRow).join('')
+      : '<div class="social-empty">Add a milestone to measure progress.</div>';
+  }
+
+  const taskCount = $('#projectTaskCount');
+  const tasks = projectTasks(project.id).filter((task) => !task.isMilestone);
+  if (taskCount) taskCount.textContent = tasks.length + (tasks.length === 1 ? ' task' : ' tasks');
+  const taskHost = $('#projectTasks');
+  if (taskHost) {
+    taskHost.innerHTML = tasks.length
+      ? tasks.map((task) => {
+          const done = task.status === 'done';
+          return '<div class="project-task' + (done ? ' is-done' : '') + '">' +
+            '<button class="task-check" type="button" data-task-toggle="' + escapeHtml(task.id) + '" ' +
+              'aria-pressed="' + done + '" aria-label="' + (done ? 'Reopen task' : 'Mark task done') + '">' +
+              (done ? '✓' : '') +
+            '</button>' +
+            '<span class="project-task-title">' + escapeHtml(task.title) + '</span>' +
+            (task.assigneeId ? '<span class="task-assignee-chip">' + escapeHtml(personName(task.assigneeId)) + '</span>' : '') +
+            (task.dueAt ? '<span class="project-milestone-due">' + escapeHtml(formatDay(task.dueAt)) + '</span>' : '') +
+          '</div>';
+        }).join('')
+      : '<div class="social-empty">Tasks you assign to this project in To-dos show up here.</div>';
+  }
+}
+
+async function addProject(event) {
+  event.preventDefault();
+  const nameInput = $('#projectName');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) {
+    toast('Give the project a name', 'error');
+    if (nameInput) nameInput.focus();
+    return;
+  }
+
+  const summaryInput = $('#projectSummary');
+  const statusInput = $('#projectStatusNew');
+  const targetInput = $('#projectTargetNew');
+  const data = await spaceRequest('/projects', {
+    method: 'POST',
+    body: {
+      name,
+      summary: summaryInput ? summaryInput.value.trim() : '',
+      status: statusInput ? statusInput.value : 'active',
+      targetOn: targetInput ? targetInput.value : '',
+      circleId: scopeCircleId()
+    }
+  });
+  if (!data || !data.project) return;
+
+  upsertSpaceRow('projects', data.project);
+  if (nameInput) nameInput.value = '';
+  if (summaryInput) summaryInput.value = '';
+  if (targetInput) targetInput.value = '';
+  refreshSpaceViews();
+  toast('Project added');
+  if (nameInput) nameInput.focus();
+}
+
+async function saveProject(event) {
+  event.preventDefault();
+  const project = findProject($('#projectFormId').value);
+  if (!project) return;
+  const nameInput = $('#projectFormName');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) {
+    toast('Give the project a name', 'error');
+    if (nameInput) nameInput.focus();
+    return;
+  }
+
+  const data = await spaceRequest('/projects/' + encodeURIComponent(project.id), {
+    method: 'PATCH',
+    body: {
+      name,
+      summary: $('#projectFormSummary') ? $('#projectFormSummary').value.trim() : '',
+      status: $('#projectFormStatus') ? $('#projectFormStatus').value : project.status,
+      targetOn: $('#projectFormTarget') ? $('#projectFormTarget').value : '',
+      version: project.version
+    }
+  });
+  if (!data || !data.project) return;
+
+  upsertSpaceRow('projects', data.project);
+  refreshSpaceViews();
+  toast('Project saved');
+}
+
+async function deleteProject(id) {
+  const project = findProject(id);
+  if (!project) return;
+  if (!confirm('Delete "' + project.name + '"? Its tasks stay in To-dos, without the project.')) return;
+
+  const data = await spaceRequest('/projects/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: project.version }
+  });
+  if (!data) return;
+
+  state.space.tasks.forEach((task) => {
+    if (task.projectId === id) {
+      task.projectId = null;
+      task.isMilestone = false;
+    }
+  });
+  dropSpaceRow('projects', id);
+  if (projectModalId === id) {
+    projectModalId = null;
+    closeModal($('#projectModal'));
+  }
+  refreshSpaceViews();
+  toast('Project deleted');
+}
+
+async function addProjectMilestone(event) {
+  event.preventDefault();
+  const project = findProject(projectModalId);
+  if (!project) return;
+  const titleInput = $('#projectMilestoneTitle');
+  const title = titleInput ? titleInput.value.trim() : '';
+  if (!title) {
+    toast('Name the milestone', 'error');
+    if (titleInput) titleInput.focus();
+    return;
+  }
+
+  const dueInput = $('#projectMilestoneDue');
+  let dueAt = null;
+  if (dueInput && dueInput.value) {
+    const due = new Date(dueInput.value + 'T09:00');
+    if (!Number.isNaN(due.getTime())) dueAt = due.toISOString();
+  }
+
+  const data = await spaceRequest('/tasks', {
+    method: 'POST',
+    body: {
+      title,
+      projectId: project.id,
+      circleId: project.circleId,
+      isMilestone: true,
+      dueAt,
+      dueAllDay: Boolean(dueAt)
+    }
+  });
+  if (!data || !data.task) return;
+
+  upsertSpaceRow('tasks', data.task);
+  if (titleInput) titleInput.value = '';
+  if (dueInput) dueInput.value = '';
+  refreshSpaceViews();
+  toast('Milestone added');
+  if (titleInput) titleInput.focus();
+}
+
+function openProjectFromCalendar(id) {
+  const project = findProject(id);
+  if (!project) return;
+  togetherScope = project.circleId || 'me';
+  togetherTab = 'projects';
+  showPage('together');
+  openProjectModal(id);
+}
+
+// --- Shelf: books shared with the selected scope, four shelves, page progress.
+
+function shelfProgress(book) {
+  const total = Number(book.pagesTotal) || 0;
+  const read = Number(book.pagesRead) || 0;
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((read / total) * 100));
+}
+
+function renderShelf() {
+  const host = $('#shelfGrid');
+  if (!host) return;
+
+  renderShelfCategories();
+
+  const books = scopeBooks();
+  const reading = books.filter((book) => book.shelf === 'reading').length;
+  const finished = books.filter((book) => book.shelf === 'finished').length;
+  const count = $('#shelfCount');
+  if (count) {
+    count.textContent = books.length
+      ? reading + ' reading · ' + finished + ' finished'
+      : 'Nothing yet';
+  }
+
+  $$('[data-shelf-filter]').forEach((tab) => {
+    const active = tab.dataset.shelfFilter === shelfFilter;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  // The filter offers every curated category plus any label already on a book,
+  // so an older book never becomes unreachable after a category is retired.
+  const categoryNames = Array.from(new Set([
+    ...scopeCategories().map((category) => category.name),
+    ...books.map((book) => book.category)
+  ].filter(Boolean))).sort((a, b) => a.localeCompare(b));
+
+  const bookCategory = $('#bookCategory');
+  if (bookCategory) {
+    const previous = bookCategory.value;
+    const options = categoryNames.length ? categoryNames : ['General'];
+    bookCategory.innerHTML = options.map((name) => (
+      '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>'
+    )).join('');
+    bookCategory.value = options.includes(previous) ? previous : options[0];
+  }
+
+  if (shelfCategory !== 'all' && !categoryNames.includes(shelfCategory)) shelfCategory = 'all';
+  const categorySelect = $('#shelfCategory');
+  if (categorySelect) {
+    categorySelect.innerHTML = '<option value="all">All categories</option>' +
+      categoryNames.map((category) => (
+        '<option value="' + escapeHtml(category) + '">' + escapeHtml(category) + '</option>'
+      )).join('');
+    categorySelect.value = shelfCategory;
+  }
+
+  const visible = books
+    .filter((book) => shelfFilter === 'all' || book.shelf === shelfFilter)
+    .filter((book) => shelfCategory === 'all' || book.category === shelfCategory)
+    .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+
+  if (!visible.length) {
+    host.innerHTML = '<div class="social-empty">' +
+      (books.length
+        ? 'No books on this shelf yet. Pick another shelf or category.'
+        : 'The shelf is empty. Add a book above and decide whether it is reading, want to read, finished, or paused.') +
+      '</div>';
+    return;
+  }
+
+  host.innerHTML = visible.map((book) => {
+    const percent = shelfProgress(book);
+    const total = Number(book.pagesTotal) || 0;
+    const read = Number(book.pagesRead) || 0;
+    const shelfOptions = [
+      ['want', 'Want to read'],
+      ['reading', 'Reading'],
+      ['finished', 'Finished'],
+      ['paused', 'Paused']
+    ].map(([value, label]) => (
+      '<option value="' + value + '"' + (book.shelf === value ? ' selected' : '') + '>' + label + '</option>'
+    )).join('');
+    const ratingOptions = '<option value="">No rating</option>' +
+      [1, 2, 3, 4, 5].map((rating) => (
+        '<option value="' + rating + '"' + (book.rating === rating ? ' selected' : '') + '>' +
+          '★'.repeat(rating) +
+        '</option>'
+      )).join('');
+    const openLink = book.linkUrl
+      ? '<a class="shelf-open" href="' + escapeHtml(book.linkUrl) + '" target="_blank" rel="noopener noreferrer">Open book ↗</a>'
+      : '';
+    const cardCategories = Array.from(new Set([
+      ...categoryNames,
+      book.category
+    ].filter(Boolean)));
+    const categoryOptions = (cardCategories.length ? cardCategories : ['General']).map((name) => (
+      '<option value="' + escapeHtml(name) + '"' + (book.category === name ? ' selected' : '') + '>' + escapeHtml(name) + '</option>'
+    )).join('');
+    const linkForm = editingBookLinkId === book.id
+      ? '<form class="shelf-link-edit" data-book-link-form="' + escapeHtml(book.id) + '" autocomplete="off">' +
+          '<input type="url" maxlength="1000" data-book-link-input="' + escapeHtml(book.id) + '" value="' + escapeHtml(book.linkUrl || '') + '" placeholder="https://drive.google.com/..." aria-label="Book link">' +
+          '<button class="btn primary small" type="submit">Save</button>' +
+          '<button class="btn ghost small" type="button" data-book-link-cancel="' + escapeHtml(book.id) + '">Cancel</button>' +
+        '</form>'
+      : '';
+
+    return '<article class="shelf-book">' +
+      '<div class="shelf-cover" aria-hidden="true"><span>' + escapeHtml(initials(book.title)) + '</span></div>' +
+      '<div class="shelf-book-main">' +
+        '<div class="shelf-book-head">' +
+          '<strong>' + escapeHtml(book.title) + '</strong>' +
+          '<div class="shelf-book-actions">' + openLink +
+            '<button class="shelf-link-btn" type="button" data-book-link-edit="' + escapeHtml(book.id) + '" title="Edit link" aria-label="Edit link">' + (book.linkUrl ? 'Edit link' : 'Add link') + '</button>' +
+            '<button class="task-del" type="button" data-book-delete="' + escapeHtml(book.id) + '" title="Remove book" aria-label="Remove book">×</button>' +
+          '</div>' +
+        '</div>' +
+        '<span class="shelf-book-by">' + escapeHtml(book.author || 'No author') + '</span>' +
+        '<div class="shelf-progress" role="img" aria-label="' + percent + '% read"><span style="width: ' + percent + '%"></span></div>' +
+        '<div class="shelf-meta">' +
+          '<label class="shelf-pages">Read ' +
+            '<input type="number" min="0" max="' + (total || 20000) + '" step="1" data-book-pages="' + escapeHtml(book.id) + '" value="' + read + '" aria-label="Pages read">' +
+            ' / ' + (total || '—') +
+          '</label>' +
+          '<select data-book-category="' + escapeHtml(book.id) + '" aria-label="Category">' + categoryOptions + '</select>' +
+          '<select data-book-shelf="' + escapeHtml(book.id) + '" aria-label="Shelf">' + shelfOptions + '</select>' +
+          '<select data-book-rating="' + escapeHtml(book.id) + '" aria-label="Rating">' + ratingOptions + '</select>' +
+          (book.circleId ? '<span class="task-circle-chip">' + escapeHtml(circleName(book.circleId)) + '</span>' : '') +
+        '</div>' +
+        linkForm +
+      '</div>' +
+    '</article>';
+  }).join('');
+}
+
+function renderShelfCategories() {
+  const host = $('#shelfCategories');
+  if (!host) return;
+
+  const categories = scopeCategories();
+  const canManage = canManageShelfCategories();
+  const existing = new Set(categories.map((category) => category.name.toLowerCase()));
+  const suggestions = SHELF_CATEGORY_SUGGESTIONS.filter((name) => !existing.has(name.toLowerCase()));
+
+  if (!canManage && !categories.length) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML =
+    '<div class="shelf-categories-head">' +
+      '<span class="label-mono">Categories</span>' +
+      (canManage ? '<span class="field-help">Only you can change these</span>' : '') +
+    '</div>' +
+    '<div class="shelf-category-chips">' +
+      (categories.length
+        ? categories.map((category) =>
+            '<span class="shelf-category-chip">' + escapeHtml(category.name) +
+              (canManage
+                ? '<button type="button" data-shelf-category-delete="' + escapeHtml(category.id) + '" title="Remove category" aria-label="Remove ' + escapeHtml(category.name) + '">×</button>'
+                : '') +
+            '</span>'
+          ).join('')
+        : '<span class="field-help">No categories yet. Add one below or pick a suggestion.</span>') +
+    '</div>' +
+    (canManage
+      ? (suggestions.length
+          ? '<div class="shelf-category-chips">' +
+              suggestions.map((name) =>
+                '<button class="shelf-category-chip shelf-category-suggest" type="button" data-shelf-category-suggest="' + escapeHtml(name) + '">+ ' + escapeHtml(name) + '</button>'
+              ).join('') +
+            '</div>'
+          : '') +
+        '<form id="newShelfCategoryForm" class="friend-add-row" autocomplete="off">' +
+          '<input id="shelfCategoryName" maxlength="40" placeholder="New category" aria-label="New category">' +
+          '<button class="btn ghost small" type="submit">Add</button>' +
+        '</form>'
+      : '');
+}
+
+async function createShelfCategory(name) {
+  const data = await spaceRequest('/shelf-categories', {
+    method: 'POST',
+    body: { name, circleId: scopeCircleId() }
+  });
+  if (!data || !data.shelfCategory) return false;
+  upsertSpaceRow('shelfCategories', data.shelfCategory);
+  refreshSpaceViews();
+  return true;
+}
+
+async function addShelfCategory(event) {
+  event.preventDefault();
+  const input = $('#shelfCategoryName');
+  const name = input ? input.value.trim() : '';
+  if (!name) {
+    toast('Name the category', 'error');
+    if (input) input.focus();
+    return;
+  }
+  if (await createShelfCategory(name)) {
+    if (input) input.value = '';
+    toast('Category added');
+  }
+}
+
+async function suggestShelfCategory(name) {
+  if (await createShelfCategory(name)) toast(name + ' added');
+}
+
+async function deleteShelfCategory(id) {
+  const category = (state.space.shelfCategories || []).find((entry) => entry.id === id);
+  if (!category) return;
+  if (!confirm('Remove the category "' + category.name + '"? Existing books keep the label.')) return;
+
+  const data = await spaceRequest('/shelf-categories/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: category.version }
+  });
+  if (!data) return;
+
+  dropSpaceRow('shelfCategories', id);
+  refreshSpaceViews();
+  toast('Category removed');
+}
+
+// ---------------------------------------------------------------- Together CRM
+
+const CONTACT_STAGE_LABEL = {
+  lead: 'Lead',
+  talking: 'Talking',
+  active: 'Active',
+  dormant: 'Dormant'
+};
+
+function parseContactTags(value) {
+  return Array.from(new Set(
+    String(value || '')
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+  )).slice(0, 8);
+}
+
+function contactStageBadge(stage) {
+  const key = CONTACT_STAGE_LABEL[stage] ? stage : 'lead';
+  return '<span class="contact-stage ' + key + '">' + CONTACT_STAGE_LABEL[key] + '</span>';
+}
+
+function contactFollowUpLabel(contact) {
+  if (!contact.nextFollowUpOn) return '';
+  const today = dayKey(new Date());
+  const overdue = dayOnly(contact.nextFollowUpOn) < today;
+  return '<span class="contact-follow' + (overdue ? ' is-overdue' : '') + '">' +
+    (overdue ? 'Overdue · ' : 'Next · ') + escapeHtml(formatDay(contact.nextFollowUpOn)) +
+    '</span>';
+}
+
+function renderCrm() {
+  renderContactList();
+
+  const note = $('#contactScopeNote');
+  if (note) {
+    note.textContent = togetherScope === 'me'
+      ? 'Only you'
+      : 'Shared with ' + circleName(togetherScope);
+  }
+
+  const stageFilter = $('#contactStageFilter');
+  if (stageFilter) stageFilter.value = crmStageFilter;
+  const search = $('#contactSearch');
+  if (search) search.value = crmSearch;
+}
+
+function renderContactList() {
+  const host = $('#contactList');
+  if (!host) return;
+
+  const contacts = scopeContacts();
+  const term = crmSearch.trim().toLowerCase();
+  const visible = contacts
+    .filter((contact) => crmStageFilter === 'all' || contact.stage === crmStageFilter)
+    .filter((contact) => {
+      if (!term) return true;
+      return [contact.name, contact.company, contact.role, contact.source]
+        .concat(contact.tags || [])
+        .some((value) => String(value || '').toLowerCase().includes(term));
+    })
+    .sort((a, b) => {
+      const left = a.nextFollowUpOn || '9999-12-31';
+      const right = b.nextFollowUpOn || '9999-12-31';
+      if (left !== right) return left.localeCompare(right);
+      return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+    });
+
+  const count = $('#contactCount');
+  if (count) {
+    count.textContent = contacts.length
+      ? visible.length + ' of ' + contacts.length + (contacts.length === 1 ? ' contact' : ' contacts')
+      : '0 contacts';
+  }
+
+  if (!visible.length) {
+    host.innerHTML = '<div class="social-empty">' +
+      (contacts.length
+        ? 'No contacts match this filter.'
+        : 'No contacts in this scope yet. Add one on the left, then log interactions as you go.') +
+      '</div>';
+    return;
+  }
+
+  host.innerHTML = visible.map((contact) => {
+    const meta = [
+      contact.company || '',
+      contact.role || ''
+    ].filter(Boolean).join(' · ');
+    const tags = (contact.tags || []).length
+      ? '<span class="contact-tags">' + contact.tags.map((tag) => escapeHtml(tag)).join(' · ') + '</span>'
+      : '';
+    return '<article class="contact-card">' +
+      '<button class="contact-open" type="button" data-contact-open="' + escapeHtml(contact.id) + '">' +
+        '<span class="social-avatar" aria-hidden="true">' + escapeHtml(contactInitials(contact.name)) + '</span>' +
+        '<span class="contact-main">' +
+          '<strong class="contact-name">' + escapeHtml(contact.name) + '</strong>' +
+          (meta ? '<span>' + escapeHtml(meta) + '</span>' : '') +
+          '<span class="contact-meta">' + contactStageBadge(contact.stage) +
+            (contact.lastContactOn
+              ? '<span>Last · ' + escapeHtml(formatDay(contact.lastContactOn)) + '</span>'
+              : '') +
+            contactFollowUpLabel(contact) +
+          '</span>' +
+          tags +
+        '</span>' +
+      '</button>' +
+      '<button class="contact-del" type="button" data-contact-delete="' + escapeHtml(contact.id) +
+        '" title="Delete contact" aria-label="Delete ' + escapeHtml(contact.name) + '">×</button>' +
+    '</article>';
+  }).join('');
+}
+
+function openContactModal(id) {
+  contactModalId = id || null;
+  renderContactModal();
+  const modal = $('#contactModal');
+  if (modal) openModal(modal);
+}
+
+function renderContactModal() {
+  const id = contactModalId;
+  const contact = id ? findContact(id) : null;
+  if (id && !contact) {
+    closeModal($('#contactModal'));
+    return;
+  }
+
+  const title = $('#contactModalTitle');
+  if (title) title.textContent = contact ? contact.name : 'Add contact';
+  const sub = $('#contactModalSub');
+  if (sub) {
+    sub.textContent = contact
+      ? [contact.company, contact.role].filter(Boolean).join(' · ') || 'Contact'
+      : 'Add a business contact, then log every interaction in one timeline.';
+  }
+
+  const fields = {
+    contactFormId: contact ? contact.id : '',
+    contactFormVersion: contact ? contact.version : '',
+    contactFormName: contact ? contact.name : '',
+    contactFormCompany: contact ? contact.company : '',
+    contactFormRole: contact ? contact.role : '',
+    contactFormEmail: contact ? contact.email : '',
+    contactFormPhone: contact ? contact.phone : '',
+    contactFormUrl: contact ? contact.url : '',
+    contactFormSource: contact ? contact.source : '',
+    contactFormTags: contact ? contactTagsText(contact) : '',
+    contactFormFollowUp: contact ? dayOnly(contact.nextFollowUpOn) : '',
+    contactFormLastTouch: contact ? dayOnly(contact.lastContactOn) : '',
+    contactFormNotes: contact ? (contact.notes || '') : ''
+  };
+  Object.entries(fields).forEach(([key, value]) => {
+    const input = $('#' + key);
+    if (input) input.value = value;
+  });
+
+  const stage = $('#contactFormStage');
+  if (stage) stage.innerHTML = contactStageOptions(contact ? contact.stage : 'lead');
+
+  const scope = $('#contactFormScope');
+  if (scope) {
+    scope.textContent = contact
+      ? (contact.circleId
+        ? 'Shared with ' + circleName(contact.circleId) + '. Notes are visible to everyone in the circle.'
+        : 'Private to ' + personName(contact.ownerId) + '.')
+      : (togetherScope === 'me'
+        ? 'Private to you. You can share it later from a circle.'
+        : 'Shared with ' + circleName(togetherScope) + '.');
+  }
+
+  const error = $('#contactFormError');
+  if (error) error.hidden = true;
+
+  const deleteBtn = $('#contactDeleteBtn');
+  if (deleteBtn) {
+    deleteBtn.hidden = !contact || !canEditContact(contact);
+    if (contact) deleteBtn.dataset.contactDelete = contact.id;
+  }
+
+  const timelineWrap = $('#contactTimelineWrap');
+  if (timelineWrap) timelineWrap.hidden = !contact;
+  if (contact) renderContactTimeline(contact);
+}
+
+function renderContactTimeline(contact) {
+  const host = $('#contactTimeline');
+  if (!host) return;
+  const notes = contactNotes(contact.id);
+  const count = $('#contactTimelineCount');
+  if (count) {
+    count.textContent = notes.length
+      ? notes.length + (notes.length === 1 ? ' note' : ' notes')
+      : 'No notes';
+  }
+
+  if (!notes.length) {
+    host.innerHTML = '<div class="social-empty">No interactions logged yet. Log the first one below.</div>';
+    return;
+  }
+
+  host.innerHTML = notes.map((note) => {
+    const canDelete = canDeleteContactNote(contact, note);
+    return '<div class="contact-note">' +
+      '<div class="contact-note-head">' +
+        '<strong>' + escapeHtml(personName(note.authorId)) + '</strong>' +
+        '<span>' + escapeHtml(formatDay(note.happenedOn)) + '</span>' +
+        (canDelete
+          ? '<button class="contact-note-del" type="button" data-note-delete="' + escapeHtml(note.id) +
+            '" title="Remove note" aria-label="Remove note">×</button>'
+          : '') +
+      '</div>' +
+      '<p>' + escapeHtml(note.body) + '</p>' +
+    '</div>';
+  }).join('');
+}
+
+async function addContact(event) {
+  event.preventDefault();
+  const nameInput = $('#contactName');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) {
+    toast('Give the contact a name', 'error');
+    if (nameInput) nameInput.focus();
+    return;
+  }
+
+  const value = (key) => {
+    const input = $('#' + key);
+    return input ? input.value.trim() : '';
+  };
+
+  const followUp = value('contactFollowUpNew');
+  const data = await spaceRequest('/contacts', {
+    method: 'POST',
+    body: {
+      name,
+      company: value('contactCompany'),
+      role: value('contactRole'),
+      email: value('contactEmail'),
+      phone: value('contactPhone'),
+      url: value('contactUrl'),
+      source: value('contactSource'),
+      stage: value('contactStageNew') || 'lead',
+      tags: parseContactTags(value('contactTagsNew')),
+      nextFollowUpOn: followUp || undefined,
+      circleId: scopeCircleId()
+    }
+  });
+  if (!data || !data.contact) return;
+
+  upsertSpaceRow('contacts', data.contact);
+  refreshSpaceViews();
+  toast('Contact added');
+  const form = $('#newContactForm');
+  if (form) form.reset();
+  const stageNew = $('#contactStageNew');
+  if (stageNew) stageNew.value = 'lead';
+}
+
+async function saveContact(event) {
+  event.preventDefault();
+  const id = $('#contactFormId').value;
+  const nameInput = $('#contactFormName');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) {
+    toast('Give the contact a name', 'error');
+    if (nameInput) nameInput.focus();
+    return;
+  }
+
+  const value = (key) => {
+    const input = $('#' + key);
+    return input ? input.value.trim() : '';
+  };
+  const followUp = value('contactFormFollowUp');
+  const body = {
+    name,
+    company: value('contactFormCompany'),
+    role: value('contactFormRole'),
+    email: value('contactFormEmail'),
+    phone: value('contactFormPhone'),
+    url: value('contactFormUrl'),
+    source: value('contactFormSource'),
+    stage: value('contactFormStage') || 'lead',
+    tags: parseContactTags(value('contactFormTags')),
+    nextFollowUpOn: followUp || '',
+    lastContactOn: value('contactFormLastTouch') || '',
+    notes: value('contactFormNotes')
+  };
+
+  const data = id
+    ? await spaceRequest('/contacts/' + encodeURIComponent(id), {
+        method: 'PATCH',
+        body: { ...body, version: Number(value('contactFormVersion')) || 1 }
+      })
+    : await spaceRequest('/contacts', {
+        method: 'POST',
+        body: { ...body, circleId: scopeCircleId() }
+      });
+  if (!data || !data.contact) return;
+
+  upsertSpaceRow('contacts', data.contact);
+  contactModalId = null;
+  closeModal($('#contactModal'));
+  refreshSpaceViews();
+  toast(id ? 'Contact updated' : 'Contact added');
+}
+
+async function deleteContact(id) {
+  const contact = findContact(id);
+  if (!contact) return;
+  if (!confirm('Delete ' + contact.name + '? The contact and its notes will be hidden.')) return;
+
+  const data = await spaceRequest('/contacts/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: contact.version }
+  });
+  if (!data) return;
+
+  dropSpaceRow('contacts', id);
+  state.space.contactNotes = state.space.contactNotes.filter((note) => note.contactId !== id);
+  if (contactModalId === id) {
+    contactModalId = null;
+    closeModal($('#contactModal'));
+  }
+  refreshSpaceViews();
+  toast('Contact deleted');
+}
+
+async function addContactNote(event) {
+  event.preventDefault();
+  const id = contactModalId;
+  if (!id) return;
+  const bodyInput = $('#contactNoteBody');
+  const body = bodyInput ? bodyInput.value.trim() : '';
+  if (!body) {
+    toast('Write the interaction first', 'error');
+    if (bodyInput) bodyInput.focus();
+    return;
+  }
+
+  const dateInput = $('#contactNoteDate');
+  const followUpInput = $('#contactNoteFollowUp');
+  const data = await spaceRequest('/contacts/' + encodeURIComponent(id) + '/notes', {
+    method: 'POST',
+    body: {
+      body,
+      happenedOn: dateInput && dateInput.value ? dateInput.value : undefined,
+      nextFollowUpOn: followUpInput && followUpInput.value ? followUpInput.value : ''
+    }
+  });
+  if (!data || !data.note || !data.contact) return;
+
+  upsertSpaceRow('contactNotes', data.note);
+  upsertSpaceRow('contacts', data.contact);
+  if (bodyInput) bodyInput.value = '';
+  if (followUpInput) followUpInput.value = '';
+  // Keep the user's other edits (company, role, …) — they may have typed
+  // them before logging this interaction. Only the note form itself resets.
+  const contactRef = findContact(id);
+  if (contactRef) {
+    renderContactTimeline(contactRef);
+    const lastTouch = $('#contactFormLastTouch');
+    if (lastTouch && !lastTouch.value) {
+      lastTouch.value = dayOnly(contactRef.lastContactOn) || '';
+    }
+    const versionInput = $('#contactFormVersion');
+    if (versionInput) versionInput.value = String(contactRef.version);
+  }
+  refreshSpaceViews();
+  toast('Interaction logged');
+}
+
+async function deleteContactNote(noteId) {
+  const data = await spaceRequest(
+    '/contacts/' + encodeURIComponent(contactModalId) + '/notes/' + encodeURIComponent(noteId),
+    { method: 'DELETE' }
+  );
+  if (!data) return;
+  dropSpaceRow('contactNotes', noteId);
+  renderContactModal();
+  refreshSpaceViews();
+  toast('Note removed');
+}
+
+async function addBook(event) {
+  event.preventDefault();
+  const titleInput = $('#bookTitle');
+  const authorInput = $('#bookAuthor');
+  const linkInput = $('#bookLink');
+  const categoryInput = $('#bookCategory');
+  const pagesInput = $('#bookPages');
+
+  const title = titleInput ? titleInput.value.trim() : '';
+  if (!title) {
+    toast('Give the book a title', 'error');
+    if (titleInput) titleInput.focus();
+    return;
+  }
+
+  const pages = pagesInput && pagesInput.value ? Number(pagesInput.value) : 0;
+  if (!Number.isInteger(pages) || pages < 0 || pages > 20000) {
+    toast('Pages must be a whole number', 'error');
+    return;
+  }
+
+  const data = await spaceRequest('/books', {
+    method: 'POST',
+    body: {
+      title,
+      author: authorInput ? authorInput.value.trim() : '',
+      linkUrl: linkInput ? linkInput.value.trim() : '',
+      category: categoryInput && categoryInput.value ? categoryInput.value : 'General',
+      pagesTotal: pages,
+      circleId: scopeCircleId()
+    }
+  });
+  if (!data || !data.book) return;
+
+  upsertSpaceRow('books', data.book);
+  if (titleInput) titleInput.value = '';
+  if (authorInput) authorInput.value = '';
+  if (linkInput) linkInput.value = '';
+  if (pagesInput) pagesInput.value = '';
+  refreshSpaceViews();
+  toast('Book added to the shelf');
+  if (titleInput) titleInput.focus();
+}
+
+async function saveBookShelf(id, shelf) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book || shelf === book.shelf) return;
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { shelf, version: book.version }
+  });
+  if (data && data.book) {
+    upsertSpaceRow('books', data.book);
+    refreshSpaceViews();
+  } else {
+    renderShelf();
+  }
+}
+
+async function saveBookPages(id, value) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book) return;
+
+  const total = Number(book.pagesTotal) || 0;
+  let pagesRead = value === '' ? 0 : Number(value);
+  if (!Number.isInteger(pagesRead) || pagesRead < 0) {
+    toast('Pages read must be a whole number', 'error');
+    renderShelf();
+    return;
+  }
+  if (total > 0) pagesRead = Math.min(pagesRead, total);
+  if (pagesRead === book.pagesRead) {
+    renderShelf();
+    return;
+  }
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { pagesRead, version: book.version }
+  });
+  if (data && data.book) {
+    upsertSpaceRow('books', data.book);
+    refreshSpaceViews();
+  } else {
+    renderShelf();
+  }
+}
+
+async function saveBookCategory(id, value) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book) return;
+
+  const category = value || 'General';
+  if (category === book.category) return;
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { category, version: book.version }
+  });
+  if (data && data.book) {
+    upsertSpaceRow('books', data.book);
+    refreshSpaceViews();
+  } else {
+    renderShelf();
+  }
+}
+
+function editBookLink(id) {
+  editingBookLinkId = id;
+  renderShelf();
+  setTimeout(() => {
+    const input = document.querySelector('[data-book-link-input="' + id + '"]');
+    if (input) input.focus();
+  }, 0);
+}
+
+async function saveBookLink(id, value) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book) return;
+
+  const linkUrl = value.trim();
+  if (linkUrl === (book.linkUrl || '')) {
+    editingBookLinkId = null;
+    renderShelf();
+    return;
+  }
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { linkUrl, version: book.version }
+  });
+  if (data && data.book) {
+    upsertSpaceRow('books', data.book);
+    editingBookLinkId = null;
+    refreshSpaceViews();
+    toast(linkUrl ? 'Book link saved' : 'Book link removed');
+  }
+}
+
+async function saveBookRating(id, value) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book) return;
+
+  const rating = value === '' ? null : Number(value);
+  if (rating === book.rating) return;
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { rating, version: book.version }
+  });
+  if (data && data.book) {
+    upsertSpaceRow('books', data.book);
+    refreshSpaceViews();
+  } else {
+    renderShelf();
+  }
+}
+
+async function deleteBook(id) {
+  const book = (state.space.books || []).find((entry) => entry.id === id);
+  if (!book) return;
+  if (!confirm('Remove "' + book.title + '" from the shelf?')) return;
+
+  const data = await spaceRequest('/books/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: book.version }
+  });
+  if (!data) return;
+
+  dropSpaceRow('books', id);
+  refreshSpaceViews();
+  toast('Book removed');
+}
+
+async function addSpaceTask(event) {
+  event.preventDefault();
+  const titleInput = $('#taskTitle');
+  const notesInput = $('#taskNotes');
+  const listSelect = $('#taskListSelect');
+  const projectSelect = $('#taskProjectSelect');
+  const dueInput = $('#taskDue');
+  const assigneeSelect = $('#taskAssignee');
+
+  const title = titleInput ? titleInput.value.trim() : '';
+  if (!title) {
+    toast('Write the task first', 'error');
+    titleInput && titleInput.focus();
+    return;
+  }
+
+  let dueAt = null;
+  if (dueInput && dueInput.value) {
+    const due = new Date(dueInput.value);
+    if (Number.isNaN(due.getTime())) {
+      toast('That due date is not valid', 'error');
+      return;
+    }
+    dueAt = due.toISOString();
+  }
+
+  const data = await spaceRequest('/tasks', {
+    method: 'POST',
+    body: {
+      title,
+      notes: notesInput ? notesInput.value.trim() : '',
+      listId: listSelect && listSelect.value ? listSelect.value : null,
+      projectId: projectSelect && projectSelect.value ? projectSelect.value : null,
+      circleId: togetherScope === 'me' ? null : togetherScope,
+      dueAt,
+      assigneeId: assigneeSelect && !assigneeSelect.hidden && assigneeSelect.value
+        ? assigneeSelect.value
+        : null
+    }
+  });
+  if (!data || !data.task) return;
+
+  upsertSpaceRow('tasks', data.task);
+  if (titleInput) titleInput.value = '';
+  if (notesInput) notesInput.value = '';
+  if (dueInput) dueInput.value = '';
+  refreshSpaceViews();
+  toast('Task added');
+  if (titleInput) titleInput.focus();
+}
+
+async function toggleSpaceTask(id) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+
+  const next = task.status === 'done' ? 'open' : 'done';
+  const previous = { status: task.status, completedAt: task.completedAt };
+  task.status = next;
+  task.completedAt = next === 'done' ? new Date().toISOString() : null;
+  renderTogether();
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { status: next, version: task.version }
+  });
+
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+  } else {
+    task.status = previous.status;
+    task.completedAt = previous.completedAt;
+  }
+  refreshSpaceViews();
+}
+
+async function saveTaskTitle(id, value) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+  const title = value.trim();
+  if (!title) {
+    toast('A task needs a title', 'error');
+    renderTodos();
+    return;
+  }
+  if (title === task.title) return;
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { title, version: task.version }
+  });
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+    refreshSpaceViews();
+  }
+}
+
+async function saveTaskDue(id, value) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+
+  let dueAt = null;
+  if (value) {
+    const due = new Date(value);
+    if (Number.isNaN(due.getTime())) {
+      toast('That due date is not valid', 'error');
+      renderTodos();
+      return;
+    }
+    dueAt = due.toISOString();
+  }
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { dueAt, version: task.version }
+  });
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+    refreshSpaceViews();
+    if (currentPage === 'calendar') toast('Calendar updated');
+  }
+}
+
+async function saveTaskAssignee(id, value) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { assigneeId: value || null, version: task.version }
+  });
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+    refreshSpaceViews();
+  }
+}
+
+async function saveTaskProject(id, value) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { projectId: value || null, version: task.version }
+  });
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+    refreshSpaceViews();
+  }
+}
+
+async function deleteSpaceTask(id) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+  if (!confirm('Delete "' + task.title + '"?')) return;
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: task.version }
+  });
+  if (!data) return;
+  dropSpaceRow('tasks', id);
+  refreshSpaceViews();
+  toast('Task deleted');
+}
+
+async function addSpaceList(event) {
+  event.preventDefault();
+  const input = $('#newListName');
+  const name = input ? input.value.trim() : '';
+  if (!name) {
+    toast('Give the list a name', 'error');
+    return;
+  }
+
+  const data = await spaceRequest('/task-lists', {
+    method: 'POST',
+    body: { name, circleId: togetherScope === 'me' ? null : togetherScope }
+  });
+  if (!data || !data.taskList) return;
+
+  upsertSpaceRow('taskLists', data.taskList);
+  togetherListId = data.taskList.id;
+  if (input) input.value = '';
+  refreshSpaceViews();
+  toast('List added');
+}
+
+async function deleteSpaceList(id) {
+  const list = findSpaceList(id);
+  if (!list) return;
+  if (!confirm('Delete the list "' + list.name + '"? Its tasks stay, without a list.')) return;
+
+  const data = await spaceRequest('/task-lists/' + encodeURIComponent(id), {
+    method: 'DELETE',
+    body: { version: list.version }
+  });
+  if (!data) return;
+
+  state.space.tasks.forEach((task) => {
+    if (task.listId === id) task.listId = null;
+  });
+  dropSpaceRow('taskLists', id);
+  if (togetherListId === id) togetherListId = 'all';
+  refreshSpaceViews();
+  toast('List deleted');
+}
+
+function openTaskFromCalendar(id) {
+  const task = findSpaceTask(id);
+  if (!task) return;
+  togetherScope = task.circleId || 'me';
+  togetherTab = 'todos';
+  togetherListId = 'all';
+  showPage('together');
+  setTimeout(() => {
+    const row = document.getElementById('spaceTask-' + id);
+    if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 80);
+}
+
+async function handleCreateCircle(event) {
+  event.preventDefault();
+  const input = $('#circleName');
+  const name = input ? input.value.trim() : '';
+  if (!name) {
+    toast('Give the circle a name', 'error');
+    return;
+  }
+
+  const submit = $('#circleCreateBtn');
+  if (submit) submit.disabled = true;
+  const data = await spaceRequest('/circles', { method: 'POST', body: { name } });
+  if (submit) submit.disabled = false;
+  if (!data || !data.circle) return;
+
+  closeModal($('#circleModal'));
+  if (input) input.value = '';
+  togetherScope = data.circle.id;
+  togetherListId = 'all';
+  await loadSpace({ silent: true });
+  renderTogether();
+  toast('Circle created');
+}
+
+async function addCircleMemberFromForm(event) {
+  event.preventDefault();
+  const select = $('#circleAddSelect');
+  const userId = select ? select.value : '';
+  if (!userId || togetherScope === 'me') return;
+
+  const data = await spaceRequest('/circles/' + encodeURIComponent(togetherScope) + '/members', {
+    method: 'POST',
+    body: { userId }
+  });
+  if (!data) return;
+
+  await loadSpace({ silent: true });
+  renderTogether();
+  toast('Kniggur added to the circle');
+}
+
+async function removeCircleMember(circleId, userId) {
+  const me = state.cloud.user && state.cloud.user.id;
+  const self = userId === me;
+  const label = self ? 'Leave this circle?' : 'Remove ' + personName(userId) + ' from this circle?';
+  if (!confirm(label)) return;
+
+  const data = await spaceRequest(
+    '/circles/' + encodeURIComponent(circleId) + '/members/' + encodeURIComponent(userId),
+    { method: 'DELETE' }
+  );
+  if (!data) return;
+
+  if (self) {
+    togetherScope = 'me';
+    togetherListId = 'all';
+  }
+  await loadSpace({ silent: true });
+  renderTogether();
+  toast(self ? 'You left the circle' : 'Kniggur removed');
+}
+
+async function deleteCircle(circleId) {
+  const circle = circleById(circleId);
+  if (!circle) return;
+  if (!confirm('Archive "' + circle.name + '"? Its lists and tasks go back to their creators.')) return;
+
+  const data = await spaceRequest('/circles/' + encodeURIComponent(circleId), { method: 'DELETE' });
+  if (!data) return;
+
+  if (togetherScope === circleId) {
+    togetherScope = 'me';
+    togetherListId = 'all';
+  }
+  await loadSpace({ silent: true });
+  renderTogether();
+  toast('Circle archived');
+}
+
+function exitCircle(circleId) {
+  const circle = circleById(circleId);
+  const me = state.cloud.user && state.cloud.user.id;
+  if (!circle || !me) return;
+  if (circle.role === 'owner' || circle.ownerId === me) {
+    deleteCircle(circleId);
+    return;
+  }
+  removeCircleMember(circleId, me);
+}
+
+// ---------------------------------------------------------------- Together calendar
+
+function spaceScheduleItems() {
+  const taskItems = state.space.tasks
+    .filter((task) => task.dueAt && !Number.isNaN(new Date(task.dueAt).getTime()))
+    .map((task) => ({
+      key: 'task:' + task.id,
+      source: 'task',
+      sourceId: task.id,
+      title: task.title,
+      at: task.dueAt,
+      allDay: Boolean(task.dueAllDay),
+      kind: 'task',
+      circleId: task.circleId || null,
+      done: task.status === 'done',
+      task
+    }));
+  const projectItems = (state.space.projects || [])
+    .filter((project) => project.targetOn)
+    .map((project) => ({
+      key: 'project:' + project.id,
+      source: 'project',
+      sourceId: project.id,
+      title: project.name,
+      at: dayOnly(project.targetOn) + 'T09:00',
+      allDay: true,
+      kind: 'milestone',
+      circleId: project.circleId || null,
+      done: project.status === 'done',
+      project
+    }));
+  const contactItems = (state.space.contacts || [])
+    .filter((contact) => contact.nextFollowUpOn)
+    .map((contact) => ({
+      key: 'contact:' + contact.id,
+      source: 'crm',
+      sourceId: contact.id,
+      title: 'Follow up: ' + contact.name,
+      at: dayOnly(contact.nextFollowUpOn) + 'T09:00',
+      allDay: true,
+      kind: 'follow-up',
+      circleId: contact.circleId || null,
+      contact
+    }));
+  return taskItems.concat(projectItems, contactItems);
+}
+
+function scheduleItems() {
+  const applicationItems = allEvents().map(({ app, event }) => ({
+    key: 'event:' + event.id,
+    source: 'application',
+    sourceId: event.id,
+    title: eventTitle(event),
+    at: event.at,
+    allDay: false,
+    kind: event.kind,
+    circleId: null,
+    done: false,
+    app,
+    event
+  }));
+  return applicationItems
+    .concat(spaceScheduleItems())
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+}
+
+function calendarVisibleItems() {
+  const items = scheduleItems();
+  if (calendarScope === 'all') return items;
+  if (calendarScope === 'me') return items.filter((item) => !item.circleId);
+  return items.filter((item) => item.circleId === calendarScope);
+}
+
+function calendarSourceLabel(item) {
+  if (item.source === 'task') {
+    const where = item.circleId ? circleName(item.circleId) : 'My task';
+    const assignee = item.task && item.task.assigneeId ? ' · ' + personName(item.task.assigneeId) : '';
+    return where + assignee;
+  }
+  if (item.source === 'crm') {
+    const where = item.contact && item.contact.circleId
+      ? circleName(item.contact.circleId)
+      : 'My contact';
+    return where + (item.contact && item.contact.company ? ' · ' + item.contact.company : '');
+  }
+  if (item.source === 'project') {
+    const where = item.circleId ? circleName(item.circleId) : 'My project';
+    return where + ' · Project target';
+  }
+  return eventKindLabel(item.event);
+}
+
+function scheduleWhen(item, options = {}) {
+  if (item.allDay) {
+    const day = options.withDay || options.full ? relativeDay(item.at) : '';
+    return day ? day + ' · All day' : 'All day';
+  }
+  let when = formatTime(item.at);
+  if (options.withDay) when = relativeDay(item.at) + ' · ' + when;
+  if (options.full) when = formatEventDateTime(item.at);
+  return when;
+}
+
+function scheduleRowHtml(item, options = {}) {
+  const past = new Date(item.at).getTime() < Date.now() ? ' is-past' : '';
+  const sub = scheduleWhen(item, options) + ' · ' + calendarSourceLabel(item);
+  const kindClass = item.source === 'task' ? ' task'
+    : item.source === 'crm' ? ' crm'
+    : item.source === 'project' ? ' project'
+    : (item.kind === 'reminder' ? ' reminder' : '');
+  const main = item.source === 'task'
+    ? '<button class="event-row-main event-row-button" type="button" data-cal-task-open="' +
+        escapeHtml(item.sourceId) + '">' +
+        '<strong>' + escapeHtml(item.title) + '</strong>' +
+        '<span>' + escapeHtml(sub) + '</span>' +
+      '</button>'
+    : item.source === 'crm'
+      ? '<button class="event-row-main event-row-button" type="button" data-cal-contact-open="' +
+          escapeHtml(item.sourceId) + '">' +
+          '<strong>' + escapeHtml(item.title) + '</strong>' +
+          '<span>' + escapeHtml(sub) + '</span>' +
+        '</button>'
+      : item.source === 'project'
+        ? '<button class="event-row-main event-row-button" type="button" data-cal-project-open="' +
+            escapeHtml(item.sourceId) + '">' +
+            '<strong>' + escapeHtml(item.title) + '</strong>' +
+            '<span>' + escapeHtml(sub) + '</span>' +
+          '</button>'
+        : '<span class="event-row-main">' +
+            '<strong>' + escapeHtml(item.title) + '</strong>' +
+            '<span>' + escapeHtml(sub) + '</span>' +
+          '</span>';
+
+  const action = item.source === 'task'
+    ? '<button class="event-del task-check-mini" type="button" data-cal-task-done="' +
+        escapeHtml(item.sourceId) + '" title="' + (item.done ? 'Reopen task' : 'Mark task done') +
+        '" aria-label="' + (item.done ? 'Reopen task' : 'Mark task done') + '">' +
+        (item.done ? '↺' : '✓') + '</button>'
+    : item.source === 'crm'
+      ? '<button class="event-del" type="button" data-cal-contact-open="' + escapeHtml(item.sourceId) +
+          '" title="Open contact" aria-label="Open contact">↗</button>'
+      : item.source === 'project'
+        ? '<button class="event-del" type="button" data-cal-project-open="' + escapeHtml(item.sourceId) +
+            '" title="Open project" aria-label="Open project">↗</button>'
+        : '<button class="event-del" type="button" data-event-del="' + escapeHtml(item.event.id) +
+          '" title="Remove event" aria-label="Remove event">×</button>';
+
+  return '<div class="event-row' + past + (item.done ? ' is-done' : '') + '">' +
+    '<span class="event-kind' + kindClass + '"></span>' +
+    main +
+    action +
+  '</div>';
+}
+
 // ---------------------------------------------------------------- Events
 
 function bindEvents() {
@@ -6024,6 +8695,241 @@ function bindEvents() {
     if (railButton && railButton.dataset.page) {
       event.preventDefault();
       showPage(railButton.dataset.page);
+      return;
+    }
+
+    const togetherTabButton = event.target.closest('[data-together-tab]');
+    if (togetherTabButton) {
+      event.preventDefault();
+      setTogetherTab(togetherTabButton.dataset.togetherTab);
+      return;
+    }
+
+    const togetherOpenTab = event.target.closest('[data-together-open-tab]');
+    if (togetherOpenTab) {
+      event.preventDefault();
+      const tab = togetherOpenTab.dataset.togetherOpenTab;
+      togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'todos';
+      showPage('together');
+      return;
+    }
+
+    const togetherOpenCircle = event.target.closest('[data-together-open-circle]');
+    if (togetherOpenCircle) {
+      event.preventDefault();
+      togetherScope = togetherOpenCircle.dataset.togetherOpenCircle;
+      togetherListId = 'all';
+      showPage('together');
+      return;
+    }
+
+    const contactOpen = event.target.closest('[data-contact-open]');
+    if (contactOpen) {
+      event.preventDefault();
+      openContactModal(contactOpen.dataset.contactOpen);
+      return;
+    }
+
+    const contactDelete = event.target.closest('[data-contact-delete]');
+    if (contactDelete) {
+      event.preventDefault();
+      deleteContact(contactDelete.dataset.contactDelete);
+      return;
+    }
+
+    const noteDelete = event.target.closest('[data-note-delete]');
+    if (noteDelete) {
+      event.preventDefault();
+      deleteContactNote(noteDelete.dataset.noteDelete);
+      return;
+    }
+
+    const togetherOpenContact = event.target.closest('[data-together-open-contact]');
+    if (togetherOpenContact) {
+      event.preventDefault();
+      openContactModal(togetherOpenContact.dataset.togetherOpenContact);
+      return;
+    }
+
+    const calContactOpen = event.target.closest('[data-cal-contact-open]');
+    if (calContactOpen) {
+      event.preventDefault();
+      openContactModal(calContactOpen.dataset.calContactOpen);
+      return;
+    }
+
+    const circleSettingsBtn = event.target.closest('[data-circle-settings]');
+    if (circleSettingsBtn) {
+      event.preventDefault();
+      const tray = $('#circleSettingsTray');
+      const circle = togetherScope === 'me' ? null : circleById(togetherScope);
+      if (circle && tray) {
+        if (tray.hidden) {
+          renderCircleCard();
+          tray.hidden = false;
+        } else {
+          tray.hidden = true;
+        }
+      }
+      return;
+    }
+
+    const circleSettingsClose = event.target.closest('#circleSettingsClose');
+    if (circleSettingsClose) {
+      event.preventDefault();
+      const tray = $('#circleSettingsTray');
+      if (tray) tray.hidden = true;
+      return;
+    }
+
+    const circleRemove = event.target.closest('[data-circle-remove]');
+    if (circleRemove) {
+      event.preventDefault();
+      if (togetherScope !== 'me') {
+        removeCircleMember(togetherScope, circleRemove.dataset.circleRemove);
+      }
+      return;
+    }
+
+    const circleExit = event.target.closest('[data-circle-exit]');
+    if (circleExit) {
+      event.preventDefault();
+      if (circleExit.dataset.circleExit) exitCircle(circleExit.dataset.circleExit);
+      return;
+    }
+
+    const spaceList = event.target.closest('[data-space-list]');
+    if (spaceList) {
+      event.preventDefault();
+      togetherListId = spaceList.dataset.spaceList;
+      renderTodos();
+      return;
+    }
+
+    const listDelete = event.target.closest('[data-list-delete]');
+    if (listDelete) {
+      event.preventDefault();
+      deleteSpaceList(listDelete.dataset.listDelete);
+      return;
+    }
+
+    const shelfFilterButton = event.target.closest('[data-shelf-filter]');
+    if (shelfFilterButton) {
+      event.preventDefault();
+      shelfFilter = shelfFilterButton.dataset.shelfFilter;
+      renderShelf();
+      return;
+    }
+
+    const bookDelete = event.target.closest('[data-book-delete]');
+    if (bookDelete) {
+      event.preventDefault();
+      deleteBook(bookDelete.dataset.bookDelete);
+      return;
+    }
+
+    const categorySuggestion = event.target.closest('[data-shelf-category-suggest]');
+    if (categorySuggestion) {
+      event.preventDefault();
+      suggestShelfCategory(categorySuggestion.dataset.shelfCategorySuggest);
+      return;
+    }
+
+    const crmStageFilterButton = event.target.closest('[data-crm-stage]');
+    if (crmStageFilterButton) {
+      crmStageFilter = crmStageFilterButton.dataset.crmStage || 'all';
+      renderContactList();
+      return;
+    }
+
+    const categoryDelete = event.target.closest('[data-shelf-category-delete]');
+    if (categoryDelete) {
+      event.preventDefault();
+      deleteShelfCategory(categoryDelete.dataset.shelfCategoryDelete);
+      return;
+    }
+
+    const bookLinkEdit = event.target.closest('[data-book-link-edit]');
+    if (bookLinkEdit) {
+      event.preventDefault();
+      editBookLink(bookLinkEdit.dataset.bookLinkEdit);
+      return;
+    }
+
+    const bookLinkCancel = event.target.closest('[data-book-link-cancel]');
+    if (bookLinkCancel) {
+      event.preventDefault();
+      editingBookLinkId = null;
+      renderShelf();
+      return;
+    }
+
+    const taskToggle = event.target.closest('[data-task-toggle]');
+    if (taskToggle) {
+      event.preventDefault();
+      toggleSpaceTask(taskToggle.dataset.taskToggle);
+      return;
+    }
+
+    const taskDelete = event.target.closest('[data-task-delete]');
+    if (taskDelete) {
+      event.preventDefault();
+      deleteSpaceTask(taskDelete.dataset.taskDelete);
+      return;
+    }
+
+    const circleRemoveBtn = event.target.closest('[data-circle-remove-btn]');
+    if (circleRemoveBtn) {
+      const memberId = circleRemoveBtn.dataset.circleRemoveBtn;
+      if (memberId && togetherScope !== 'me') {
+        event.preventDefault();
+        removeCircleMember(togetherScope, memberId);
+      }
+      return;
+    }
+
+    const circleDeleteBtn = event.target.closest('[data-circle-delete-btn]');
+    if (circleDeleteBtn) {
+      const circleId = circleDeleteBtn.dataset.circleDeleteBtn;
+      if (circleId) {
+        event.preventDefault();
+        deleteCircle(circleId);
+      }
+      return;
+    }
+
+    const projectOpen = event.target.closest('[data-project-open]');
+    if (projectOpen) {
+      event.preventDefault();
+      openProjectModal(projectOpen.dataset.projectOpen);
+      return;
+    }
+
+    const projectDelete = event.target.closest('[data-project-delete]');
+    if (projectDelete) {
+      event.preventDefault();
+      deleteProject(projectDelete.dataset.projectDelete);
+      return;
+    }
+
+    const calProjectOpen = event.target.closest('[data-cal-project-open]');
+    if (calProjectOpen) {
+      event.preventDefault();
+      openProjectFromCalendar(calProjectOpen.dataset.calProjectOpen);
+      return;
+    }
+
+    const calTaskOpen = event.target.closest('[data-cal-task-open]');
+    if (calTaskOpen) {
+      event.preventDefault();
+      openTaskFromCalendar(calTaskOpen.dataset.calTaskOpen);
+      return;
+    }
+
+    const calTaskDone = event.target.closest('[data-cal-task-done]');
+    if (calTaskDone) {
+      event.preventDefault();
+      toggleSpaceTask(calTaskDone.dataset.calTaskDone);
       return;
     }
 
@@ -6240,10 +9146,184 @@ function bindEvents() {
   });
 
   document.addEventListener('submit', (event) => {
-    const form = event.target.closest && event.target.closest('[data-share-reply]');
-    if (!form) return;
-    event.preventDefault();
-    submitShareReply(form);
+    const shareForm = event.target.closest && event.target.closest('[data-share-reply]');
+    if (shareForm) {
+      event.preventDefault();
+      submitShareReply(shareForm);
+      return;
+    }
+
+    const taskForm = event.target.closest && event.target.closest('#newTaskForm');
+    if (taskForm) {
+      event.preventDefault();
+      addSpaceTask(event);
+      return;
+    }
+
+    const projectForm = event.target.closest && event.target.closest('#newProjectForm');
+    if (projectForm) {
+      event.preventDefault();
+      addProject(event);
+      return;
+    }
+
+    const editProjectForm = event.target.closest && event.target.closest('#projectForm');
+    if (editProjectForm) {
+      event.preventDefault();
+      saveProject(event);
+      return;
+    }
+
+    const milestoneForm = event.target.closest && event.target.closest('#projectMilestoneForm');
+    if (milestoneForm) {
+      event.preventDefault();
+      addProjectMilestone(event);
+      return;
+    }
+
+    const listForm = event.target.closest && event.target.closest('#newListForm');
+    if (listForm) {
+      event.preventDefault();
+      addSpaceList(event);
+      return;
+    }
+
+    const bookForm = event.target.closest && event.target.closest('#newBookForm');
+    if (bookForm) {
+      event.preventDefault();
+      addBook(event);
+      return;
+    }
+
+    const categoryForm = event.target.closest && event.target.closest('#newShelfCategoryForm');
+    if (categoryForm) {
+      event.preventDefault();
+      addShelfCategory(event);
+      return;
+    }
+
+    const bookLinkForm = event.target.closest && event.target.closest('[data-book-link-form]');
+    if (bookLinkForm) {
+      event.preventDefault();
+      const input = bookLinkForm.querySelector('[data-book-link-input]');
+      saveBookLink(bookLinkForm.dataset.bookLinkForm, input ? input.value : '');
+      return;
+    }
+
+    const newContactForm = event.target.closest && event.target.closest('#newContactForm');
+    if (newContactForm) {
+      event.preventDefault();
+      addContact(event);
+      return;
+    }
+
+    const contactForm = event.target.closest && event.target.closest('#contactForm');
+    if (contactForm) {
+      event.preventDefault();
+      saveContact(event);
+      return;
+    }
+
+    const contactNoteForm = event.target.closest && event.target.closest('#contactNoteForm');
+    if (contactNoteForm) {
+      event.preventDefault();
+      addContactNote(event);
+      return;
+    }
+
+    const circleForm = event.target.closest && event.target.closest('#circleForm');
+    if (circleForm) {
+      event.preventDefault();
+      handleCreateCircle(event);
+      return;
+    }
+
+    const circleAdd = event.target.closest && event.target.closest('#circleAddForm');
+    if (circleAdd) {
+      event.preventDefault();
+      addCircleMemberFromForm(event);
+    }
+  });
+
+  document.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+
+    if (target.closest('#togetherScope')) {
+      setTogetherScope(target.value);
+      return;
+    }
+
+    if (target.closest('#contactSearch')) {
+      crmSearch = target.value;
+      renderContactList();
+      return;
+    }
+
+    if (target.closest('#contactStageFilter')) {
+      crmStageFilter = target.value;
+      renderContactList();
+      return;
+    }
+
+    if (target.closest('#calScopeFilter')) {
+      calendarScope = target.value;
+      localStorage.setItem(STORE.calScope, calendarScope);
+      renderCalendar();
+      return;
+    }
+
+    if (target.closest('#shelfCategory')) {
+      shelfCategory = target.value;
+      renderShelf();
+      return;
+    }
+
+    const bookCategory = target.closest('[data-book-category]');
+    if (bookCategory) {
+      saveBookCategory(bookCategory.dataset.bookCategory, bookCategory.value);
+      return;
+    }
+
+    const bookShelf = target.closest('[data-book-shelf]');
+    if (bookShelf) {
+      saveBookShelf(bookShelf.dataset.bookShelf, bookShelf.value);
+      return;
+    }
+
+    const bookPages = target.closest('[data-book-pages]');
+    if (bookPages) {
+      saveBookPages(bookPages.dataset.bookPages, bookPages.value);
+      return;
+    }
+
+    const bookRating = target.closest('[data-book-rating]');
+    if (bookRating) {
+      saveBookRating(bookRating.dataset.bookRating, bookRating.value);
+    }
+
+    const taskTitle = target.closest('[data-task-title]');
+    if (taskTitle) {
+      saveTaskTitle(taskTitle.dataset.taskTitle, taskTitle.value);
+      return;
+    }
+
+    const taskDue = target.closest('[data-task-due]');
+    if (taskDue) {
+      saveTaskDue(taskDue.dataset.taskDue, taskDue.value);
+      return;
+    }
+
+    const taskAssignee = target.closest('[data-task-assignee]');
+    if (taskAssignee) {
+      saveTaskAssignee(taskAssignee.dataset.taskAssignee, taskAssignee.value);
+      return;
+    }
+
+    const taskProject = target.closest('[data-task-project]');
+    if (taskProject) {
+      saveTaskProject(taskProject.dataset.taskProject, taskProject.value);
+    }
   });
 
   const profileForm = $('#profileForm');
@@ -6417,6 +9497,16 @@ function bindEvents() {
   const notifyBtn = $('#notifyBtn');
   if (notifyBtn) notifyBtn.addEventListener('click', enableNotifications);
 
+  const dashInsightsToggle = $('#dashInsightsToggle');
+  if (dashInsightsToggle) {
+    dashInsightsToggle.addEventListener('change', () => {
+      dashInsights = dashInsightsToggle.checked;
+      localStorage.setItem(STORE.dashInsights, dashInsights ? 'on' : 'off');
+      if (currentPage === 'dashboard') renderDashboard();
+      toast(dashInsights ? 'Dashboard insights shown' : 'Dashboard insights hidden');
+    });
+  }
+
   const deleteBtn = $('#deleteAppBtn');
   if (deleteBtn) {
     deleteBtn.addEventListener('click', () => {
@@ -6473,6 +9563,21 @@ function bindEvents() {
 
   const friendsSend = $('#friendsSendBtn');
   if (friendsSend) friendsSend.addEventListener('click', () => openShareModal());
+
+  const togetherRefresh = $('#togetherRefreshBtn');
+  if (togetherRefresh) togetherRefresh.addEventListener('click', () => {
+    loadSpace();
+    loadSocial();
+  });
+
+  const newCircle = $('#newCircleBtn');
+  if (newCircle) newCircle.addEventListener('click', () => {
+    const form = $('#circleForm');
+    if (form) form.reset();
+    openModal($('#circleModal'));
+    const input = $('#circleName');
+    if (input) setTimeout(() => input.focus(), 60);
+  });
 
   const shareApp = $('#shareAppBtn');
   if (shareApp) shareApp.addEventListener('click', shareCurrentApplication);

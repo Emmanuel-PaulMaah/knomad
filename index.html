@@ -420,6 +420,8 @@
       align-items: stretch;
     }
 
+    .charts-grid[hidden] { display: none; }
+
     .chart-card { display: flex; flex-direction: column; }
 
     .chart-note {
@@ -433,13 +435,20 @@
 
     /* Activity bars */
 
-    .activity { margin-top: auto; }
+    .activity {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      margin-top: auto;
+    }
 
     .activity-bars {
       display: flex;
       align-items: flex-end;
       gap: 6px;
-      height: 184px;
+      flex: 1;
+      height: auto;
+      min-height: 184px;
       margin-top: 8px;
       border-bottom: 1px solid var(--line);
       background-image: linear-gradient(to top, var(--line) 1px, transparent 1px);
@@ -469,14 +478,27 @@
     .bar-col:hover .bar-value { opacity: 1; }
 
     .bar {
+      display: flex;
+      flex-direction: column-reverse;
       width: 100%;
       max-width: 18px;
       border-radius: 2px 2px 0 0;
-      background: var(--accent);
+      background: var(--line);
+      overflow: hidden;
       transition: background-color 0.14s var(--ease);
     }
 
-    .bar-col:hover .bar { background: #b7cbe1; }
+    .bar-seg {
+      flex-basis: 0;
+      width: 100%;
+      min-height: 2px;
+    }
+
+    .bar-seg.jobs { background: var(--accent); }
+    .bar-seg.together { background: var(--sage); }
+
+    .bar-col:hover .bar-seg.jobs { background: #b7cbe1; }
+    .bar-col:hover .bar-seg.together { background: #a9c6ae; }
     .bar.empty { background: var(--line); }
 
     .activity-axis {
@@ -490,6 +512,31 @@
       color: var(--muted);
       font-variant-numeric: tabular-nums;
     }
+
+    .activity-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .activity-legend > span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .legend-dot.together { background: var(--sage); }
 
     .chart-empty {
       display: grid;
@@ -509,11 +556,30 @@
 
     .status-rows {
       display: grid;
-      gap: 16px;
+      gap: 18px;
       margin-top: 4px;
     }
 
+    .status-group {
+      display: grid;
+      gap: 14px;
+    }
+
+    .status-group-title {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
     .status-row.is-empty { opacity: 0.45; }
+
+    /* Collapsible chart sections */
+    .chart-card.collapsed .chart-note { display: none; }
+    .chart-card.collapsed .activity, .chart-card.collapsed .status-rows { display: none; }
+    .chart-card.collapsed [data-toggle-chart] { transform: rotate(180deg); }
 
     .status-row-head {
       display: flex;
@@ -542,6 +608,10 @@
     .status-dot.interviewing { background: var(--amber); }
     .status-dot.offer { background: var(--sage); }
     .status-dot.rejected { background: #7c766c; }
+    .status-dot.open { background: var(--accent); }
+    .status-dot.done { background: var(--sage); }
+    .status-dot.reading { background: var(--amber); }
+    .status-dot.finished { background: var(--sage); }
 
     .status-count {
       font-family: var(--mono);
@@ -568,6 +638,10 @@
     .status-fill.interviewing { background: var(--amber); }
     .status-fill.offer { background: var(--sage); }
     .status-fill.rejected { background: #7c766c; }
+    .status-fill.open { background: var(--accent); }
+    .status-fill.done { background: var(--sage); }
+    .status-fill.reading { background: var(--amber); }
+    .status-fill.finished { background: var(--sage); }
 
     .chart-foot {
       margin: auto 0 0;
@@ -632,6 +706,7 @@
     }
 
     .event-kind.reminder { background: var(--amber); }
+    .event-kind.crm { background: var(--amber); }
 
     .event-list { display: flex; flex-direction: column; }
 
@@ -807,6 +882,7 @@
     }
 
     .cal-dot.reminder { background: var(--amber); }
+    .cal-dot.crm { background: var(--amber); }
 
     .cal-more {
       font-family: var(--mono);
@@ -835,6 +911,94 @@
       gap: 16px;
       align-items: stretch;
     }
+
+    /* ---------- Together band on Dashboard ---------- */
+
+    .together-band {
+      margin-top: 16px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .together-band-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .together-band-head h3 { font-size: 14px; }
+
+    .together-dash {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .together-dash-card {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+    }
+
+    .together-dash-card .event-empty {
+      padding: 10px 0 2px;
+      border-top: 0;
+    }
+
+    .together-dash-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .together-dash-card-head strong { font-size: 12.5px; font-weight: 500; }
+
+    .together-dash-copy { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+
+    .together-dash-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      width: 100%;
+      padding: 7px 0;
+      border: 0;
+      border-top: 1px solid var(--line);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .together-dash-row:hover { color: var(--accent); }
+
+    .together-dash-when {
+      flex-shrink: 0;
+      min-width: 54px;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--muted);
+    }
+
+    .together-dash-main { flex: 1; min-width: 0; }
+    .together-dash-main strong { display: block; font-size: 12.5px; font-weight: 500; }
+    .together-dash-main span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .together-dash-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 
     /* ---------- Recent list ---------- */
 
@@ -2288,7 +2452,18 @@
       align-items: start;
     }
 
-    .social-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .social-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; position: relative; }
+
+    .circle-settings-tray {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 40;
+      width: min(360px, calc(100vw - 32px));
+      text-align: left;
+    }
+
+    .circle-settings-tray .card { margin: 0; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); }
 
     .social-list {
       display: grid;
@@ -2543,6 +2718,904 @@
       text-align: center;
     }
 
+    /* ---------- Together: circles & shared to-dos ---------- */
+
+    .together-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .together-tabs {
+      display: flex;
+      gap: 2px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+
+    .together-tab {
+      appearance: none;
+      background: none;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      padding: 9px 12px 7px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .together-tab:hover { color: var(--text); }
+
+    .together-tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+
+    .together-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .space-lists {
+      display: grid;
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .space-list-row {
+      display: flex;
+      align-items: stretch;
+      background: var(--panel);
+    }
+
+    .space-list {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 13px;
+      border: 0;
+      background: transparent;
+      color: var(--text-2);
+      font: inherit;
+      font-size: 12.5px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .space-list:hover { background: var(--panel-2); color: var(--text); }
+
+    .space-list.active {
+      background: var(--accent-soft);
+      color: var(--text);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
+    .space-list-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .space-list-count {
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .space-list-del {
+      width: 34px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .space-list-del:hover { color: var(--red); }
+
+    .task-add {
+      display: grid;
+      gap: 10px;
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .task-add-main { display: grid; gap: 8px; }
+
+    .task-add-main textarea {
+      min-height: 54px;
+      padding: 8px 10px;
+      font-size: 12.5px;
+    }
+
+    .task-add-meta {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .task-add-meta label {
+      display: grid;
+      gap: 4px;
+      flex: 1 1 140px;
+      min-width: 120px;
+      color: var(--muted);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .task-add-meta select,
+    .task-add-meta input {
+      width: 100%;
+      padding: 7px 8px;
+      font-size: 12px;
+    }
+
+    .task-add-meta .btn { margin-left: auto; }
+
+    #togetherScope {
+      width: auto;
+      max-width: 200px;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    #taskAssignee {
+      width: auto;
+      flex: 0 1 150px;
+      padding: 7px 8px;
+      font-size: 12px;
+    }
+
+    .space-tasks { display: flex; flex-direction: column; }
+
+    .space-task {
+      display: flex;
+      align-items: flex-start;
+      gap: 11px;
+      padding: 12px 2px;
+      border-top: 1px solid var(--line);
+    }
+
+    .space-task:first-child { border-top: 0; }
+
+    .space-task.is-done .task-title-input {
+      color: var(--muted);
+      text-decoration: line-through;
+    }
+
+    .task-check {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      margin-top: 2px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--bg-2);
+      color: var(--bg);
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .task-check[aria-pressed="true"] {
+      background: var(--sage);
+      border-color: var(--sage);
+    }
+
+    .space-task-main {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+
+    .task-title-input {
+      width: 100%;
+      margin-left: -4px;
+      padding: 2px 4px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .task-title-input:hover { border-color: var(--line); }
+
+    .task-title-input:focus {
+      border-color: var(--accent);
+      background: var(--bg-2);
+      outline: none;
+    }
+
+    .task-notes {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .task-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .task-list-chip,
+    .task-assignee-chip,
+    .task-circle-chip {
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text-2);
+      font-size: 10.5px;
+    }
+
+    .task-circle-chip {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .task-due { display: inline-flex; align-items: center; gap: 5px; }
+
+    .task-due input { width: auto; max-width: 100%; padding: 3px 5px; font-size: 11px; }
+
+    .task-assignee,
+    .task-project {
+      width: auto;
+      max-width: 150px;
+      padding: 3px 6px;
+      font-size: 11px;
+    }
+
+    /* Projects */
+
+    .project-list { display: flex; flex-direction: column; gap: 12px; }
+
+    .project-card {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+    }
+
+    .project-card.is-done { opacity: 0.7; }
+
+    .project-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .project-open {
+      flex: 1;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .project-open strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13.5px;
+      font-weight: 500;
+    }
+
+    .project-open:hover strong { color: var(--accent); }
+
+    .project-status {
+      flex-shrink: 0;
+      font-size: 10.5px;
+      color: var(--text-2);
+    }
+
+    .project-status.planning { color: var(--muted); }
+    .project-status.active { color: var(--accent); }
+    .project-status.paused { color: var(--amber); }
+    .project-status.done { color: var(--sage); }
+
+    .project-summary {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .project-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .project-target.is-overdue { color: var(--red); }
+
+    .project-progress {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--bg-2);
+      overflow: hidden;
+    }
+
+    .project-progress span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+      transition: width 180ms ease;
+    }
+
+    .project-progress-label { color: var(--muted); font-size: 11px; }
+
+    .project-milestones { display: grid; gap: 4px; }
+
+    .project-milestone,
+    .project-task {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .project-milestone .task-check,
+    .project-task .task-check {
+      width: 17px;
+      height: 17px;
+      margin-top: 0;
+      font-size: 10px;
+    }
+
+    .project-milestone-title,
+    .project-task-title {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .project-milestone.is-done .project-milestone-title,
+    .project-task.is-done .project-task-title {
+      color: var(--muted);
+      text-decoration: line-through;
+    }
+
+    .project-milestone-due { flex-shrink: 0; color: var(--muted); font-size: 10.5px; }
+
+    .project-modal-section {
+      margin-top: 22px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+
+    .project-milestone-add { margin-top: 10px; }
+    .project-milestone-add input[type="date"] { flex: 0 1 150px; }
+
+    .task-del {
+      flex-shrink: 0;
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .task-del:hover { color: var(--red); border-color: rgba(207, 111, 95, 0.3); }
+
+    .circle-card { margin-bottom: 20px; }
+
+    .circle-card .card-head { align-items: flex-start; }
+
+    .circle-card .circle-scan { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
+
+    .circle-card .circle-scan-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); width: 100%; }
+
+    .circle-card { margin-bottom: 0; }
+
+    .circle-settings-panel { display: inline-block; }
+
+    .circle-settings-panel .card-head {
+      flex-wrap: wrap;
+      gap: 6px;
+      align-self: flex-start;
+    }
+
+    .circle-settings-panel:not(.external) .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .circle-settings-panel .circle-scan-label {
+      width: 100%;
+    }
+
+    .circle-settings-panel.external .circle-scan-label {
+      width: auto;
+      margin-right: auto;
+    }
+
+    .circle-settings-panel .circle-scan { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
+
+    .circle-settings-panel .circle-scan-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); width: 100%; }
+
+    .circle-settings-panel .circle-scan .btn { margin-left: 6px; }
+
+    .circle-settings-panel .social-list { margin-top: 12px; }
+
+    .circle-settings-panel .circle-add { margin-top: 12px; display: grid; gap: 8px; }
+
+    #circleSettingsIcon {
+      line-height: 0;
+    }
+
+    #circleSettingsIcon span {
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .circle-settings-gear {
+      width: 16px;
+      height: 16px;
+    }
+
+    .circle-settings-btn {
+      padding: 4px;
+    }
+
+    .circle-settings-trigger {
+      padding: 6px;
+    }
+
+    .card-actions-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .card-actions-icon:hover {
+      background: var(--panel-2);
+      color: var(--text);
+      border-color: var(--line-strong);
+    }
+
+    .circle-card .social-list { margin-top: 12px; }
+
+    .circle-add { margin-top: 12px; display: grid; gap: 8px; }
+
+    .together-placeholder {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .together-placeholder p { margin: 0 0 8px; }
+    .together-placeholder p:last-child { margin-bottom: 0; }
+    .together-placeholder strong { color: var(--text-2); font-weight: 600; }
+
+    /* ---------- CRM ---------- */
+
+    .contact-card {
+      display: flex;
+      align-items: stretch;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .contact-card .contact-open {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      padding: 12px 14px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .contact-card .contact-del {
+      border: 0;
+      border-left: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 14px 10px;
+    }
+
+    .contact-card .contact-del:hover { color: var(--red); }
+
+    .contact-main { min-width: 0; display: grid; gap: 2px; }
+    .contact-main strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+    .contact-main span { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+
+    .contact-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+    .contact-stage { font-size: 10.5px; }
+    .contact-stage.lead { color: var(--muted); }
+    .contact-stage.talking { color: var(--amber); }
+    .contact-stage.active { color: var(--sage); }
+    .contact-stage.dormant { color: var(--text-2); }
+
+    .contact-follow { color: var(--amber); font-size: 11px; }
+    .contact-follow.is-overdue { color: var(--red); font-weight: 500; }
+
+    .contact-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .contact-tags span {
+      display: inline-block;
+      padding: 1px 6px;
+      background: var(--panel-2);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .contact-filters { display: flex; gap: 8px; margin: 14px 0; align-items: center; }
+    .contact-filters input { flex: 1; min-width: 0; }
+    .contact-filters select { flex: 0 0 170px; }
+    .contact-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .contact-timeline-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .contact-note-form {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 10px;
+    }
+
+    .contact-note-form button { justify-self: start; }
+
+    .contact-note {
+      padding: 10px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: grid;
+      gap: 4px;
+    }
+
+    .contact-note-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .contact-note-head strong { color: var(--text); }
+    .contact-note p { margin: 0; font-size: 12.5px; color: var(--text); }
+
+    .contact-note-del {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .contact-note-del:hover { color: var(--red); }
+
+    /* ---------- Shelf ---------- */
+
+    .shelf-filters {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .shelf-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .shelf-tab {
+      padding: 5px 9px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .shelf-tab:hover { color: var(--text); }
+
+    .shelf-tab.active {
+      border-color: var(--line-strong);
+      background: var(--panel-2);
+      color: var(--text);
+    }
+
+    .shelf-list {
+      display: grid;
+      gap: 1px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--line);
+    }
+
+    .shelf-book {
+      display: flex;
+      gap: 14px;
+      padding: 14px;
+      background: var(--panel);
+    }
+
+    .shelf-cover {
+      flex: 0 0 46px;
+      height: 64px;
+      border-radius: 4px;
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(135deg, var(--accent-soft), transparent 60%),
+        var(--panel-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+    }
+
+    .shelf-book-main { flex: 1; min-width: 0; display: grid; gap: 5px; }
+
+    .shelf-book-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .shelf-book-head strong { font-size: 13.5px; font-weight: 500; }
+
+    .shelf-book-by { color: var(--muted); font-size: 11.5px; }
+
+    .shelf-book-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .shelf-open {
+      color: var(--accent);
+      font-size: 11px;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .shelf-open:hover { text-decoration: underline; }
+
+    .shelf-link-btn {
+      border: 0;
+      background: transparent;
+      padding: 0;
+      color: var(--muted);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .shelf-link-btn:hover { color: var(--accent); }
+
+    .shelf-link-edit {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .shelf-link-edit input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      font-size: 11.5px;
+    }
+
+    .shelf-progress {
+      height: 4px;
+      border-radius: 4px;
+      background: var(--line);
+      overflow: hidden;
+    }
+
+    .shelf-progress span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+      transition: width 240ms var(--ease);
+    }
+
+    .shelf-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
+    .shelf-meta select {
+      width: auto;
+      max-width: 150px;
+      padding: 4px 7px;
+      font-size: 11.5px;
+    }
+
+    .shelf-pages {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10.5px;
+    }
+
+    .shelf-pages input {
+      width: 60px;
+      padding: 4px 6px;
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .shelf-categories {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+    }
+
+    .shelf-categories-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .shelf-category-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .shelf-category-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: var(--panel-2);
+      font-size: 11px;
+      color: var(--text-2);
+    }
+
+    .shelf-category-chip button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .shelf-category-chip button:hover { color: var(--red); }
+
+    .shelf-category-suggest {
+      border: 1px dashed var(--line-strong);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .shelf-category-suggest:hover {
+      border-color: var(--accent-hard);
+      color: var(--text);
+    }
+
+    @media (max-width: 640px) {
+      .shelf-book { gap: 10px; }
+      .shelf-cover { display: none; }
+    }
+
+    .cal-scope {
+      width: auto;
+      max-width: 160px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+
+    .event-kind.task { background: var(--sage); }
+    .event-kind.project { background: var(--amber); }
+
+    .cal-dot.task { background: var(--sage); }
+    .cal-dot.task.done { opacity: 0.4; }
+    .cal-dot.project { background: var(--amber); }
+    .cal-dot.project.done { opacity: 0.4; }
+
+    .event-row.is-done { opacity: 0.55; }
+
+    .event-row-button {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .event-row-button:hover strong { color: var(--accent); }
+
+    .task-check-mini { font-size: 12px; }
+
     /* ---------- Settings ---------- */
 
     .settings-grid {
@@ -2623,10 +3696,12 @@
 
     @media (max-width: 900px) {
       .dash-grid { grid-template-columns: 1fr; }
+      .together-dash { grid-template-columns: 1fr; }
       .charts-grid { grid-template-columns: 1fr; }
       .calendar-grid { grid-template-columns: 1fr; }
       .app-grid { grid-template-columns: 1fr; }
       .social-grid { grid-template-columns: 1fr; }
+      .together-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .form-grid .span-2 { grid-column: auto; }
       .sheet { flex: none; max-height: 440px; }
@@ -2681,6 +3756,10 @@
       .share-reply .btn { width: 100%; }
       .friend-add-row { flex-wrap: wrap; }
       .friend-add-row .btn { width: 100%; }
+      .task-add-meta { align-items: stretch; }
+      .task-add-meta label { flex: 1 1 140px; }
+      .task-add-meta .btn { width: 100%; margin-left: 0; }
+      .cal-scope { max-width: none; flex: 1 1 140px; }
       .dropzone { align-items: flex-start; flex-direction: column; gap: 12px; }
       .dropzone-action { align-self: flex-start; }
       .event-form-grid { grid-template-columns: 1fr; }
@@ -3050,9 +4129,9 @@
       <button class="rail-btn" data-page="search" title="Find jobs" aria-label="Find jobs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
       </button>
-      <button class="rail-btn" data-page="friends" title="Kniggurs" aria-label="Kniggurs">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 19.4c0-3 2.8-5.1 6.2-5.1s6.2 2.1 6.2 5.1"/><path d="M16.4 5.2a3.4 3.4 0 0 1 0 6.4"/><path d="M17.6 14.6c2.2.5 3.6 2.1 3.6 4.1"/></svg>
-        <span class="rail-badge" id="friendsBadge" hidden>0</span>
+      <button class="rail-btn" data-page="together" title="Together &amp; kniggurs" aria-label="Together &amp; kniggurs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8" r="3"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M2.8 19c0-2.7 2.5-4.6 5.7-4.6s5.7 1.9 5.7 4.6"/><path d="M14.6 14.9c2.9.2 4.9 1.9 4.9 4.1"/><path d="M14.7 6.4l1.2 1.2 2.2-2.4"/></svg>
+        <span class="rail-badge" id="togetherBadge" hidden>0</span>
       </button>
       <button class="rail-btn" data-page="tracker" title="Applications" aria-label="Applications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
@@ -3113,18 +4192,30 @@
 
           <div class="stats-grid" id="statsGrid"></div>
 
-          <div class="charts-grid">
+          <section class="together-band" aria-labelledby="togetherDashTitle">
+            <div class="together-band-head">
+              <div>
+                <h3 id="togetherDashTitle">Together</h3>
+                <p class="chart-note" id="togetherDashNote">Shared tasks and circles with your kniggurs</p>
+              </div>
+              <button class="btn ghost small" type="button" data-page-target="together">Open Together</button>
+            </div>
+            <div class="together-dash" id="togetherDash"></div>
+          </section>
+
+          <div class="charts-grid" id="dashCharts">
             <div class="card chart-card">
               <div class="card-head">
                 <h3>Activity</h3>
+                <button class="btn ghost small" data-toggle-chart="activity" aria-label="Collapse activity"><span class="icon" aria-hidden="true">▼</span></button>
                 <span class="chart-note">Last 14 days</span>
               </div>
               <div class="activity" id="activityChart"></div>
             </div>
-
             <div class="card chart-card">
               <div class="card-head">
                 <h3>Status breakdown</h3>
+                <button class="btn ghost small" data-toggle-chart="status" aria-label="Collapse status breakdown"><span class="icon" aria-hidden="true">▼</span></button>
                 <span class="chart-note" id="statusTotal">0 applications</span>
               </div>
               <div class="status-rows" id="statusChart"></div>
@@ -3218,76 +4309,334 @@
           </p>
         </section>
 
-        <!-- Friends -->
-        <section class="page" id="friendsPage">
+        <!-- Together, with kniggurs and the shared inbox -->
+        <section class="page" id="togetherPage">
           <div class="page-head">
             <div>
-              <p class="page-desc">Add people you trust, send them job leads, and keep every introduction in one shared inbox.</p>
-              <p class="label-mono" id="friendsSummary">Sign in to add kniggurs</p>
+              <p class="page-desc">Add kniggurs, swap job leads, and plan in one place: shared to-dos, due dates on the calendar, and circles that keep the right people in the loop.</p>
+              <p class="label-mono" id="togetherSummary">Sign in to plan with your kniggurs</p>
             </div>
-            <div class="social-head-actions" id="friendsHeadActions" hidden>
-              <button class="btn ghost small" id="friendsRefreshBtn" type="button">Refresh</button>
-              <button class="btn primary small" id="friendsSendBtn" type="button">Send a job</button>
+            <div class="social-head-actions" id="togetherActions" hidden>
+              <div id="friendsHeadActions" hidden>
+                <button class="btn primary small" id="friendsSendBtn" type="button">Send a job</button>
+              </div>
+              <select id="togetherScope" aria-label="Who to plan with"></select>
+              <button class="btn ghost small" id="togetherRefreshBtn" type="button">Refresh</button>
+              <button class="btn ghost small" type="button" id="circleSettingsBtn" aria-label="Open circle details" data-circle-settings="">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="circle-settings-gear">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+              </button>
+              <div class="circle-settings-tray" id="circleSettingsTray" hidden>
+                <div class="card" id="circleCard" hidden>
+                  <div class="card-head">
+                    <div>
+                      <h3 id="circleTitle">Circle</h3>
+                      <span class="label-mono" id="circleMeta"></span>
+                    </div>
+                    <button class="btn ghost small close-icon" type="button" id="circleSettingsClose" aria-label="Close circle details">×</button>
+                  </div>
+                  <div class="social-list" id="circleMembers"></div>
+                  <div class="circle-add" id="circleAddWrap"></div>
+                  <div class="circle-scan" id="circleScan">
+                    <button class="btn ghost small danger" type="button" id="circleExitBtn" data-circle-exit="">Delete circle</button>
+                  </div>
+                </div>
+              </div>
+              <button class="btn primary small" id="newCircleBtn" type="button">New circle</button>
             </div>
           </div>
 
-          <div class="card empty-state" id="friendsSignedOut" hidden>
-            <p>Kniggurs and the shared inbox live in your knomad account.</p>
+          <div class="card empty-state" id="togetherSignedOut" hidden>
+            <p>Circles and shared to-dos live in your knomad account.</p>
             <button class="btn primary small" type="button" data-page-target="settings">Sign in or create an account</button>
           </div>
 
-          <div id="friendsSignedIn" hidden>
-            <div class="social-grid">
-              <div class="card" id="sharedCard">
-                <div class="card-head">
-                  <h3>Shared jobs</h3>
-                  <span class="label-mono" id="inboxCount"></span>
-                </div>
-                <div class="share-tabs" role="tablist" aria-label="Shared jobs">
-                  <button class="share-tab" type="button" role="tab" data-share-tab="inbox" aria-selected="true" aria-controls="sharedInbox">
-                    Inbox <span class="share-tab-count" id="inboxTabCount">0</span>
-                  </button>
-                  <button class="share-tab" type="button" role="tab" data-share-tab="sent" aria-selected="false" aria-controls="sentList">
-                    Sent <span class="share-tab-count" id="sentTabCount">0</span>
-                  </button>
-                </div>
-                <div class="social-list" id="sharedInbox" role="tabpanel"></div>
-                <div class="social-list" id="sentList" role="tabpanel" hidden></div>
+          <div id="togetherSignedIn" hidden>
+            <div class="together-bar">
+              <div class="together-tabs" role="tablist" aria-label="Together">
+                <button class="together-tab active" type="button" role="tab" data-together-tab="todos" aria-selected="true">To-dos</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="kniggurs" aria-selected="false">Kniggurs</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="projects" aria-selected="false">Projects</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="learning" aria-selected="false">Learning</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="shelf" aria-selected="false">Shelf</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="crm" aria-selected="false">CRM</button>
               </div>
+            </div>
 
-              <div class="stack">
-                <div class="card">
-                  <div class="card-head">
-                    <h3>Add a Kniggur</h3>
-                    <span class="label-mono">By email</span>
-                  </div>
-                  <form id="friendRequestForm" class="field" autocomplete="off" style="margin-bottom: 8px;">
-                    <label class="sr-only" for="friendEmail">Kniggur's email</label>
-                    <div class="friend-add-row">
-                      <input type="email" id="friendEmail" placeholder="kniggur@example.com" required>
-                      <button class="btn primary small" id="friendRequestBtn" type="submit">Send request</button>
+            <div id="circleSettingsAnchor"></div>
+
+            <div id="togetherKniggurs" hidden>
+              <p class="label-mono" id="friendsSummary">Sign in to add kniggurs</p>
+
+              <div id="friendsSignedIn" hidden>
+                <div class="social-grid">
+                  <div class="card" id="sharedCard">
+                    <div class="card-head">
+                      <h3>Shared jobs</h3>
+                      <span class="label-mono" id="inboxCount"></span>
                     </div>
-                  </form>
-                  <p class="field-help">They need a knomad account. The request waits until they accept it.</p>
-                </div>
-
-                <div class="card" id="friendRequestsCard" hidden>
-                  <div class="card-head">
-                    <h3>Requests</h3>
-                    <span class="label-mono" id="requestCount"></span>
+                    <div class="share-tabs" role="tablist" aria-label="Shared jobs">
+                      <button class="share-tab" type="button" role="tab" data-share-tab="inbox" aria-selected="true" aria-controls="sharedInbox">
+                        Inbox <span class="share-tab-count" id="inboxTabCount">0</span>
+                      </button>
+                      <button class="share-tab" type="button" role="tab" data-share-tab="sent" aria-selected="false" aria-controls="sentList">
+                        Sent <span class="share-tab-count" id="sentTabCount">0</span>
+                      </button>
+                    </div>
+                    <div class="social-list" id="sharedInbox" role="tabpanel"></div>
+                    <div class="social-list" id="sentList" role="tabpanel" hidden></div>
                   </div>
-                  <div class="social-list" id="friendRequests"></div>
-                </div>
 
-                <div class="card">
-                  <div class="card-head">
-                    <h3>Kniggurs</h3>
-                    <span class="label-mono" id="friendCount"></span>
+                  <div class="stack">
+                    <div class="card">
+                      <div class="card-head">
+                        <h3>Add a Kniggur</h3>
+                        <span class="label-mono">By email</span>
+                      </div>
+                      <form id="friendRequestForm" class="field" autocomplete="off" style="margin-bottom: 8px;">
+                        <label class="sr-only" for="friendEmail">Kniggur's email</label>
+                        <div class="friend-add-row">
+                          <input type="email" id="friendEmail" placeholder="kniggur@example.com" required>
+                          <button class="btn primary small" id="friendRequestBtn" type="submit">Send request</button>
+                        </div>
+                      </form>
+                      <p class="field-help">They need a knomad account. The request waits until they accept it.</p>
+                    </div>
+
+                    <div class="card" id="friendRequestsCard" hidden>
+                      <div class="card-head">
+                        <h3>Requests</h3>
+                        <span class="label-mono" id="requestCount"></span>
+                      </div>
+                      <div class="social-list" id="friendRequests"></div>
+                    </div>
+
+                    <div class="card">
+                      <div class="card-head">
+                        <h3>Kniggurs</h3>
+                        <span class="label-mono" id="friendCount"></span>
+                      </div>
+                      <div class="social-list" id="friendList"></div>
+                    </div>
                   </div>
-                  <div class="social-list" id="friendList"></div>
                 </div>
               </div>
             </div>
+
+            <div id="togetherTodos">
+              <div class="together-grid">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Lists</h3>
+                    <span class="label-mono" id="spaceListCount"></span>
+                  </div>
+                  <div class="space-lists" id="spaceLists"></div>
+                  <form id="newListForm" class="friend-add-row" autocomplete="off">
+                    <input id="newListName" placeholder="New list" maxlength="80" aria-label="New list name">
+                    <button class="btn ghost small" type="submit">Add</button>
+                  </form>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>To-dos</h3>
+                    <span class="label-mono" id="spaceTaskCount"></span>
+                  </div>
+                  <form id="newTaskForm" class="task-add" autocomplete="off">
+                    <div class="task-add-main">
+                      <input id="taskTitle" placeholder="What needs doing?" maxlength="240" aria-label="Task title">
+                      <textarea id="taskNotes" rows="2" maxlength="4000" placeholder="Notes (optional)" aria-label="Task notes"></textarea>
+                    </div>
+                    <div class="task-add-meta">
+                      <label>List <select id="taskListSelect"></select></label>
+                      <label>Project <select id="taskProjectSelect"></select></label>
+                      <label>Due <input type="datetime-local" id="taskDue"></label>
+                      <select id="taskAssignee" aria-label="Assignee" hidden></select>
+                      <button class="btn primary small" type="submit">Add task</button>
+                    </div>
+                  </form>
+                  <div class="space-tasks" id="spaceTasks"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="togetherProjects" hidden>
+              <div class="together-grid">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Start a project</h3>
+                    <span class="label-mono">Shared in this scope</span>
+                  </div>
+                  <form id="newProjectForm" class="field" autocomplete="off">
+                    <label for="projectName">Project name</label>
+                    <input id="projectName" maxlength="120" required placeholder="e.g. Portfolio relaunch">
+                    <label for="projectSummary">Summary (optional)</label>
+                    <textarea id="projectSummary" rows="2" maxlength="1000" placeholder="What does done look like?"></textarea>
+                    <div class="form-grid">
+                      <div class="field">
+                        <label for="projectStatusNew">Status</label>
+                        <select id="projectStatusNew">
+                          <option value="planning">Planning</option>
+                          <option value="active" selected>Active</option>
+                          <option value="paused">Paused</option>
+                          <option value="done">Done</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label for="projectTargetNew">Target date</label>
+                        <input id="projectTargetNew" type="date">
+                      </div>
+                    </div>
+                    <p class="field-help">Projects hold tasks and milestones. A milestone counts toward the progress bar.</p>
+                    <button class="btn primary small" type="submit">Add project</button>
+                  </form>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Projects</h3>
+                    <span class="label-mono" id="projectCount">Nothing yet</span>
+                  </div>
+                  <div class="project-list" id="projectList"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="togetherShelf" hidden>
+              <div class="together-grid">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Add a book</h3>
+                    <span class="label-mono">Shared in this scope</span>
+                  </div>
+                  <form id="newBookForm" class="field" autocomplete="off">
+                    <label for="bookTitle">Title</label>
+                    <input id="bookTitle" maxlength="200" required placeholder="What are you reading?">
+                    <label for="bookAuthor">Author</label>
+                    <input id="bookAuthor" maxlength="120" placeholder="Author (optional)">
+                    <label for="bookLink">Link (optional)</label>
+                    <input id="bookLink" type="url" maxlength="1000" placeholder="https://drive.google.com/...">
+                    <p class="field-help">A Google Drive or web link opens in a new tab from the shelf.</p>
+                    <div class="form-grid">
+                      <div class="field">
+                        <label for="bookCategory">Category</label>
+                        <select id="bookCategory" aria-label="Category"></select>
+                      </div>
+                      <div class="field">
+                        <label for="bookPages">Pages</label>
+                        <input id="bookPages" type="number" min="0" max="20000" step="1" placeholder="0">
+                      </div>
+                    </div>
+                    <button class="btn primary small" type="submit">Add to shelf</button>
+                  </form>
+                  <div class="shelf-categories" id="shelfCategories"></div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Shelf</h3>
+                    <span class="label-mono" id="shelfCount"></span>
+                  </div>
+                  <div class="shelf-filters">
+                    <div class="shelf-tabs" role="tablist" aria-label="Shelf">
+                      <button class="shelf-tab active" type="button" data-shelf-filter="all" aria-selected="true">All</button>
+                      <button class="shelf-tab" type="button" data-shelf-filter="reading" aria-selected="false">Reading</button>
+                      <button class="shelf-tab" type="button" data-shelf-filter="want" aria-selected="false">Want to read</button>
+                      <button class="shelf-tab" type="button" data-shelf-filter="finished" aria-selected="false">Finished</button>
+                      <button class="shelf-tab" type="button" data-shelf-filter="paused" aria-selected="false">Paused</button>
+                    </div>
+                    <select id="shelfCategory" class="cal-scope" aria-label="Category filter">
+                      <option value="all">All categories</option>
+                    </select>
+                  </div>
+                  <div class="shelf-list" id="shelfGrid"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="togetherCrm" hidden>
+              <div class="together-grid">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Add a contact</h3>
+                    <span class="label-mono" id="contactScopeNote">Only you</span>
+                  </div>
+                  <form id="newContactForm" class="field" autocomplete="off">
+                    <div class="form-grid">
+                      <div class="field">
+                        <label for="contactName">Name</label>
+                        <input id="contactName" maxlength="120" required placeholder="Ada Okafor">
+                      </div>
+                      <div class="field">
+                        <label for="contactCompany">Company</label>
+                        <input id="contactCompany" maxlength="120" placeholder="Company or organisation">
+                      </div>
+                      <div class="field">
+                        <label for="contactRole">Role</label>
+                        <input id="contactRole" maxlength="120" placeholder="e.g. Founder">
+                      </div>
+                      <div class="field">
+                        <label for="contactStageNew">Stage</label>
+                        <select id="contactStageNew">
+                          <option value="lead" selected>Lead</option>
+                          <option value="talking">Talking</option>
+                          <option value="active">Active</option>
+                          <option value="dormant">Dormant</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label for="contactEmail">Email</label>
+                        <input id="contactEmail" type="email" maxlength="200" placeholder="ada@example.com">
+                      </div>
+                      <div class="field">
+                        <label for="contactPhone">Phone</label>
+                        <input id="contactPhone" maxlength="80" placeholder="+234 ...">
+                      </div>
+                      <div class="field">
+                        <label for="contactUrl">Link</label>
+                        <input id="contactUrl" type="url" maxlength="1000" placeholder="https://...">
+                      </div>
+                      <div class="field">
+                        <label for="contactSource">Source</label>
+                        <input id="contactSource" maxlength="80" placeholder="e.g. Conference">
+                      </div>
+                    </div>
+                    <div class="field">
+                      <label for="contactTagsNew">Tags</label>
+                      <input id="contactTagsNew" maxlength="200" placeholder="client, intro, warm">
+                    </div>
+                    <div class="field">
+                      <label for="contactFollowUpNew">Next follow-up</label>
+                      <input id="contactFollowUpNew" type="date">
+                    </div>
+                    <button class="btn primary small" type="submit">Add contact</button>
+                  </form>
+                  <p class="field-help">Contacts are private to you unless you add them while a circle is selected.</p>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Contacts</h3>
+                    <span class="label-mono" id="contactCount">0 contacts</span>
+                  </div>
+                  <div class="contact-filters">
+                    <input id="contactSearch" type="search" maxlength="120" placeholder="Search name, company, or tag" aria-label="Search contacts">
+                    <select id="contactStageFilter" class="cal-scope" aria-label="Stage filter">
+                      <option value="all">All stages</option>
+                      <option value="lead">Lead</option>
+                      <option value="talking">Talking</option>
+                      <option value="active">Active</option>
+                      <option value="dormant">Dormant</option>
+                    </select>
+                  </div>
+                  <div class="contact-list" id="contactList"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card together-placeholder" id="togetherPlaceholder" hidden></div>
           </div>
         </section>
 
@@ -3340,7 +4689,7 @@
         <!-- Calendar -->
         <section class="page" id="calendarPage">
           <div class="page-head">
-            <p class="page-desc">Interviews and reminders from every application, in one month view. Reminders are stored locally with no account or server.</p>
+            <p class="page-desc">Interviews, reminders, and to-do due dates in one month view. Filter by source, or open a task straight from the day it is due.</p>
           </div>
 
           <div class="calendar-grid">
@@ -3351,6 +4700,7 @@
                   <span class="label-mono" id="calEventCount">No events</span>
                 </div>
                 <div class="cal-nav">
+                  <select class="cal-scope" id="calScopeFilter" aria-label="Calendar source"></select>
                   <button class="btn ghost small" id="calTodayBtn" type="button">Today</button>
                   <button class="cal-arrow" id="calPrevBtn" type="button" aria-label="Previous month">‹</button>
                   <button class="cal-arrow" id="calNextBtn" type="button" aria-label="Next month">›</button>
@@ -3596,6 +4946,20 @@
               <div class="modal-actions" style="justify-content: flex-start; margin-top: 16px;">
                 <button class="btn ghost" id="notifyBtn" type="button">Enable browser reminders</button>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Dashboard</h3>
+                <span class="label-mono">Activity &amp; status</span>
+              </div>
+              <p style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px;">
+                The dashboard charts count applications added, tasks completed, and books finished, including your circles. Turn them off to keep the dashboard focused on applications and Together.
+              </p>
+              <label class="checkline" for="dashInsightsToggle">
+                <input type="checkbox" id="dashInsightsToggle">
+                <span>Show <strong>Activity</strong> and <strong>Status breakdown</strong> on the dashboard</span>
+              </label>
             </div>
 
             <div class="card">
@@ -3882,6 +5246,190 @@
           <button type="submit" class="btn primary" id="shareJobSubmit">Send job</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Project modal -->
+  <div class="modal" id="projectModal" hidden>
+    <div class="modal-panel wide" role="dialog" aria-modal="true" aria-labelledby="projectModalTitle">
+      <button class="modal-x" data-close aria-label="Close">×</button>
+
+      <p class="eyebrow">Together · Projects</p>
+      <h2 id="projectModalTitle">Project</h2>
+      <p class="modal-sub" id="projectModalSub"></p>
+
+      <form id="projectForm" autocomplete="off">
+        <input type="hidden" id="projectFormId">
+        <input type="hidden" id="projectFormVersion">
+        <div class="field">
+          <label for="projectFormName">Name</label>
+          <input id="projectFormName" maxlength="120" required>
+        </div>
+        <div class="field">
+          <label for="projectFormSummary">Summary</label>
+          <textarea id="projectFormSummary" rows="2" maxlength="1000"></textarea>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="projectFormStatus">Status</label>
+            <select id="projectFormStatus"></select>
+          </div>
+          <div class="field">
+            <label for="projectFormTarget">Target date</label>
+            <input id="projectFormTarget" type="date">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn danger" type="button" id="projectDeleteBtn">Delete project</button>
+          <button class="btn ghost" type="button" data-close>Cancel</button>
+          <button class="btn primary" type="submit">Save project</button>
+        </div>
+      </form>
+
+      <div class="project-modal-section">
+        <div class="contact-timeline-head">
+          <h3>Milestones</h3>
+          <span class="label-mono" id="projectMilestoneCount"></span>
+        </div>
+        <div id="projectMilestones"></div>
+        <form id="projectMilestoneForm" class="friend-add-row project-milestone-add" autocomplete="off">
+          <input id="projectMilestoneTitle" maxlength="240" placeholder="New milestone" aria-label="Milestone title" required>
+          <input id="projectMilestoneDue" type="date" aria-label="Milestone due date">
+          <button class="btn ghost small" type="submit">Add</button>
+        </form>
+      </div>
+
+      <div class="project-modal-section">
+        <div class="contact-timeline-head">
+          <h3>Tasks</h3>
+          <span class="label-mono" id="projectTaskCount"></span>
+        </div>
+        <div id="projectTasks"></div>
+        <p class="field-help">Assign a task to this project from the To-dos tab.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Circle modal -->
+  <div class="modal" id="circleModal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="circleModalTitle">
+      <button class="modal-x" data-close aria-label="Close">×</button>
+
+      <p class="eyebrow">Together</p>
+      <h2 id="circleModalTitle">Start a circle</h2>
+      <p class="modal-sub">A circle is a small group of your kniggurs. Lists and to-dos you share with it show up for everyone in the circle.</p>
+
+      <form id="circleForm" autocomplete="off">
+        <div class="field">
+          <label for="circleName">Circle name</label>
+          <input id="circleName" maxlength="60" placeholder="e.g. Job hunt crew" required>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Cancel</button>
+          <button type="submit" class="btn primary" id="circleCreateBtn">Create circle</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Contact modal -->
+  <div class="modal" id="contactModal" hidden>
+    <div class="modal-panel wide" role="dialog" aria-modal="true" aria-labelledby="contactModalTitle">
+      <button class="modal-x" data-close aria-label="Close">×</button>
+
+      <p class="eyebrow">Together · CRM</p>
+      <h2 id="contactModalTitle">Contact</h2>
+      <p class="modal-sub" id="contactModalSub"></p>
+
+      <form id="contactForm" autocomplete="off">
+        <input type="hidden" id="contactFormId">
+        <input type="hidden" id="contactFormVersion">
+        <div class="form-grid">
+          <div class="field">
+            <label for="contactFormName">Name</label>
+            <input id="contactFormName" maxlength="120" required>
+          </div>
+          <div class="field">
+            <label for="contactFormCompany">Company</label>
+            <input id="contactFormCompany" maxlength="120">
+          </div>
+          <div class="field">
+            <label for="contactFormRole">Role</label>
+            <input id="contactFormRole" maxlength="120">
+          </div>
+          <div class="field">
+            <label for="contactFormStage">Stage</label>
+            <select id="contactFormStage"></select>
+          </div>
+          <div class="field">
+            <label for="contactFormEmail">Email</label>
+            <input id="contactFormEmail" type="email" maxlength="200">
+          </div>
+          <div class="field">
+            <label for="contactFormPhone">Phone</label>
+            <input id="contactFormPhone" maxlength="80">
+          </div>
+          <div class="field">
+            <label for="contactFormUrl">Link</label>
+            <input id="contactFormUrl" type="url" maxlength="1000">
+          </div>
+          <div class="field">
+            <label for="contactFormSource">Source</label>
+            <input id="contactFormSource" maxlength="80">
+          </div>
+          <div class="field">
+            <label for="contactFormTags">Tags</label>
+            <input id="contactFormTags" maxlength="200" placeholder="client, intro, warm">
+          </div>
+          <div class="field">
+            <label for="contactFormFollowUp">Next follow-up</label>
+            <input id="contactFormFollowUp" type="date">
+          </div>
+          <div class="field">
+            <label for="contactFormLastTouch">Last touch</label>
+            <input id="contactFormLastTouch" type="date">
+          </div>
+        </div>
+        <div class="field">
+          <label for="contactFormNotes">Notes</label>
+          <textarea id="contactFormNotes" rows="3" maxlength="4000" placeholder="Context, intro path, what they care about"></textarea>
+        </div>
+
+        <p class="field-help" id="contactFormScope"></p>
+        <p class="share-error" id="contactFormError" hidden></p>
+
+        <div class="modal-actions">
+          <button type="button" class="btn danger" id="contactDeleteBtn" hidden>Delete contact</button>
+          <button type="button" class="btn ghost" data-close>Cancel</button>
+          <button type="submit" class="btn primary" id="contactSaveBtn">Save contact</button>
+        </div>
+      </form>
+
+      <div id="contactTimelineWrap" hidden>
+        <div class="contact-timeline-head">
+          <h3>Timeline</h3>
+          <span class="label-mono" id="contactTimelineCount"></span>
+        </div>
+        <div id="contactTimeline"></div>
+        <form id="contactNoteForm" class="contact-note-form" autocomplete="off">
+          <div class="field">
+            <label for="contactNoteBody">Log an interaction</label>
+            <textarea id="contactNoteBody" rows="2" maxlength="2000" required placeholder="What happened, and what is next?"></textarea>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="contactNoteDate">Date</label>
+              <input id="contactNoteDate" type="date">
+            </div>
+            <div class="field">
+              <label for="contactNoteFollowUp">Next follow-up</label>
+              <input id="contactNoteFollowUp" type="date">
+            </div>
+          </div>
+          <button class="btn primary small" type="submit">Log interaction</button>
+        </form>
+      </div>
     </div>
   </div>
 
