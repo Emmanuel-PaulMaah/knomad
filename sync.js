@@ -174,7 +174,10 @@ export async function api(path, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error((data && data.error) || "Request failed (" + response.status + ")");
+    const error = new Error((data && data.error) || "Request failed (" + response.status + ")");
+    error.status = response.status;
+    error.data = data;
+    throw error;
   }
 
   return data;

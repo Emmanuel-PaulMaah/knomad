@@ -485,7 +485,469 @@ async function main() {
     }
   }
 
-  // 9. Clean up the E2E documents
+  // 9. Together: circles, shared to-dos, and version guards
+  {
+    const stamp = Date.now();
+    const memberEmail = `knomad-e2e-member-${stamp}@example.com`;
+    const memberPassword = "Knomad-E2E-Member-12345!";
+
+    const memberSignUp = await jsonFetch(authBase() + "/sign-up/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8000" },
+      body: JSON.stringify({ email: memberEmail, password: memberPassword, name: "Knomad Member" }),
+    });
+
+    let memberHeaders = null;
+    if (memberSignUp.response.ok) {
+      const cookies = cookieHeader(memberSignUp.response);
+      const token = await jsonFetch(authBase() + "/token", {
+        headers: { Origin: "http://localhost:8000", ...(cookies ? { Cookie: cookies } : {}) },
+      });
+      const memberJwt = token.body?.token || memberSignUp.response.headers.get("set-auth-jwt") || "";
+      memberHeaders = { Authorization: "Bearer " + memberJwt };
+    }
+
+    const memberMe = memberHeaders ? await jsonFetch(fn + "/me", { headers: memberHeaders }) : null;
+    const memberId = memberMe?.body?.userId || "";
+
+    if (!memberHeaders || !memberId) {
+      record("Together", "fail", "member sign-up failed: " + JSON.stringify(memberSignUp.body));
+    } else {
+      const requested = await jsonFetch(fn + "/friends/request", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ email: memberEmail }),
+      });
+      const memberSocial = await jsonFetch(fn + "/social", { headers: memberHeaders });
+      const requestId = memberSocial.body?.incoming?.[0]?.id || "";
+      const accepted = await jsonFetch(fn + "/friends/respond", {
+        method: "POST",
+        headers: { ...memberHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, action: "accept" }),
+      });
+
+      const personalListRes = await jsonFetch(fn + "/task-lists", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "E2E personal list" }),
+      });
+      const personalList = personalListRes.body?.taskList || null;
+
+      const personalTaskRes = await jsonFetch(fn + "/tasks", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "E2E personal task",
+          listId: personalList?.id,
+          dueAt: new Date(stamp + 24 * 60 * 60 * 1000).toISOString(),
+        }),
+      });
+      const personalTask = personalTaskRes.body?.task || null;
+
+      const memberBefore = await jsonFetch(fn + "/space", { headers: memberHeaders });
+      const memberSeesPersonal = (memberBefore.body?.tasks || []).some(
+        (task) => task.id === personalTask?.id,
+      );
+
+      const bumped = await jsonFetch(fn + "/tasks/" + encodeURIComponent(personalTask?.id || ""), {
+        method: "PATCH",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "doing", version: personalTask?.version }),
+      });
+      const stale = await jsonFetch(fn + "/tasks/" + encodeURIComponent(personalTask?.id || ""), {
+        method: "PATCH",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "open", version: personalTask?.version }),
+      });
+
+      const circleRes = await jsonFetch(fn + "/circles", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "E2E circle " + stamp }),
+      });
+      const circle = circleRes.body?.circle || null;
+
+      const addedMember = circle
+        ? await jsonFetch(fn + "/circles/" + encodeURIComponent(circle.id) + "/members", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: memberId }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const sharedListRes = circle
+        ? await jsonFetch(fn + "/task-lists", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "E2E shared list", circleId: circle.id }),
+          })
+        : { response: { ok: false }, body: null };
+      const sharedList = sharedListRes.body?.taskList || null;
+
+      const sharedTaskRes = circle
+        ? await jsonFetch(fn + "/tasks", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E shared task",
+              circleId: circle.id,
+              listId: sharedList?.id,
+              assigneeId: memberId,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const sharedTask = sharedTaskRes.body?.task || null;
+
+      const projectRes = circle
+        ? await jsonFetch(fn + "/projects", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "E2E shared project",
+              summary: "Prove milestones carry progress",
+              status: "active",
+              targetOn: new Date(stamp + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+              circleId: circle.id,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const project = projectRes.body?.project || null;
+
+      const milestoneRes = project
+        ? await jsonFetch(fn + "/tasks", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E milestone",
+              projectId: project.id,
+              circleId: circle.id,
+              isMilestone: true,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const milestone = milestoneRes.body?.task || null;
+
+      const invalidMilestone = await jsonFetch(fn + "/tasks", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "E2E orphan milestone", isMilestone: true }),
+      });
+
+      const categoryRes = circle
+        ? await jsonFetch(fn + "/shelf-categories", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Business", circleId: circle.id }),
+          })
+        : { response: { ok: false }, body: null };
+      const shelfCategory = categoryRes.body?.shelfCategory || null;
+
+      const memberCategoryCreate = circle
+        ? await jsonFetch(fn + "/shelf-categories", {
+            method: "POST",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Member pick", circleId: circle.id }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const bookRes = circle
+        ? await jsonFetch(fn + "/books", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E shared book",
+              author: "Knomad Author",
+              category: shelfCategory?.name || "Business",
+              pagesTotal: 240,
+              circleId: circle.id,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const book = bookRes.body?.book || null;
+
+      const memberBookSpace = await jsonFetch(fn + "/space", { headers: memberHeaders });
+      const seenBook = (memberBookSpace.body?.books || []).find(
+        (entry) => entry.id === book?.id,
+      ) || null;
+      const seenCategory = (memberBookSpace.body?.shelfCategories || []).find(
+        (entry) => entry.id === shelfCategory?.id,
+      ) || null;
+
+      const memberCategoryDelete = seenCategory
+        ? await jsonFetch(fn + "/shelf-categories/" + encodeURIComponent(seenCategory.id), {
+            method: "DELETE",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ version: seenCategory.version }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const memberFinishedBook = seenBook
+        ? await jsonFetch(fn + "/books/" + encodeURIComponent(seenBook.id), {
+            method: "PATCH",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ shelf: "finished", version: seenBook.version }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const ownerBookSpace = await jsonFetch(fn + "/space", { headers: authHeaders });
+      const finishedBook = (ownerBookSpace.body?.books || []).find(
+        (entry) => entry.id === book?.id,
+      ) || null;
+
+      const memberSpace = await jsonFetch(fn + "/space", { headers: memberHeaders });
+      const seenTask = (memberSpace.body?.tasks || []).find((task) => task.id === sharedTask?.id) || null;
+      const seenProject = (memberSpace.body?.projects || []).find((entry) => entry.id === project?.id) || null;
+      const seenMilestone = (memberSpace.body?.tasks || []).find((task) => task.id === milestone?.id) || null;
+
+      const memberDone = seenTask
+        ? await jsonFetch(fn + "/tasks/" + encodeURIComponent(seenTask.id), {
+            method: "PATCH",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "done", version: seenTask.version }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const milestoneDone = seenMilestone
+        ? await jsonFetch(fn + "/tasks/" + encodeURIComponent(seenMilestone.id), {
+            method: "PATCH",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "done", version: seenMilestone.version }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const ownerSpace = await jsonFetch(fn + "/space", { headers: authHeaders });
+      const ownerSeesDone = (ownerSpace.body?.tasks || []).find(
+        (task) => task.id === sharedTask?.id,
+      ) || null;
+      const ownerSeesMilestone = (ownerSpace.body?.tasks || []).find(
+        (task) => task.id === milestone?.id,
+      ) || null;
+
+      const contactDay = new Date().toISOString().slice(0, 10);
+      const contactRes = circle
+        ? await jsonFetch(fn + "/contacts", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "E2E shared contact",
+              company: "Knomad Co",
+              stage: "talking",
+              tags: ["client", "warm"],
+              nextFollowUpOn: contactDay,
+              circleId: circle.id,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const contact = contactRes.body?.contact || null;
+
+      const privateContactRes = await jsonFetch(fn + "/contacts", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "E2E private contact" }),
+      });
+      const privateContact = privateContactRes.body?.contact || null;
+
+      const memberContactSpace = await jsonFetch(fn + "/space", { headers: memberHeaders });
+      const seenContact = (memberContactSpace.body?.contacts || []).find(
+        (entry) => entry.id === contact?.id,
+      ) || null;
+      const memberSeesPrivateContact = (memberContactSpace.body?.contacts || []).some(
+        (entry) => entry.id === privateContact?.id,
+      );
+
+      const noteRes = seenContact
+        ? await jsonFetch(fn + "/contacts/" + encodeURIComponent(seenContact.id) + "/notes", {
+            method: "POST",
+            headers: { ...memberHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ body: "E2E logged interaction", happenedOn: contactDay }),
+          })
+        : { response: { ok: false }, body: null };
+      const contactNote = noteRes.body?.note || null;
+      const notedContact = noteRes.body?.contact || null;
+
+      const staleContact = contact
+        ? await jsonFetch(fn + "/contacts/" + encodeURIComponent(contact.id), {
+            method: "PATCH",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ company: "Too late", version: contact.version }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const archived = circle
+        ? await jsonFetch(fn + "/circles/" + encodeURIComponent(circle.id), {
+            method: "DELETE",
+            headers: authHeaders,
+          })
+        : { response: { ok: false }, body: null };
+
+      const afterArchiveOwner = await jsonFetch(fn + "/space", { headers: authHeaders });
+      const detached = (afterArchiveOwner.body?.tasks || []).find(
+        (task) => task.id === sharedTask?.id,
+      ) || null;
+      const detachedContact = (afterArchiveOwner.body?.contacts || []).find(
+        (entry) => entry.id === contact?.id,
+      ) || null;
+      const detachedProject = (afterArchiveOwner.body?.projects || []).find(
+        (entry) => entry.id === project?.id,
+      ) || null;
+
+      const afterArchiveMember = await jsonFetch(fn + "/space", { headers: memberHeaders });
+      const memberStillSees =
+        (afterArchiveMember.body?.circles || []).some((entry) => entry.id === circle?.id) ||
+        (afterArchiveMember.body?.taskLists || []).some((list) => list.id === sharedList?.id) ||
+        (afterArchiveMember.body?.tasks || []).some((task) => task.id === sharedTask?.id);
+
+      const ok =
+        memberSignUp.response.ok &&
+        requested.response.ok &&
+        accepted.response.ok &&
+        Boolean(personalList?.id) &&
+        personalTask?.circleId === null &&
+        !memberSeesPersonal &&
+        bumped.response.ok &&
+        bumped.body?.task?.version === personalTask?.version + 1 &&
+        stale.response.status === 409 &&
+        stale.body?.current?.version === bumped.body?.task?.version &&
+        circleRes.response.ok &&
+        addedMember.response.ok &&
+        sharedListRes.response.ok &&
+        sharedTaskRes.response.ok &&
+        projectRes.response.ok &&
+        Boolean(project?.id) &&
+        project?.circleId === circle?.id &&
+        milestoneRes.response.ok &&
+        milestone?.projectId === project?.id &&
+        milestone?.isMilestone === true &&
+        invalidMilestone.response.status === 400 &&
+        seenProject?.version === project?.version &&
+        seenMilestone?.version === milestone?.version &&
+        milestoneDone.response.ok &&
+        milestoneDone.body?.task?.status === "done" &&
+        ownerSeesMilestone?.status === "done" &&
+        categoryRes.response.ok &&
+        Boolean(shelfCategory?.id) &&
+        memberCategoryCreate.response.status === 403 &&
+        seenCategory?.id === shelfCategory?.id &&
+        memberCategoryDelete.response.status === 403 &&
+        bookRes.response.ok &&
+        Boolean(book?.id) &&
+        seenBook?.version === book?.version &&
+        memberFinishedBook.response.ok &&
+        memberFinishedBook.body?.book?.shelf === "finished" &&
+        memberFinishedBook.body?.book?.pagesRead === 240 &&
+        finishedBook?.shelf === "finished" &&
+        finishedBook?.pagesRead === 240 &&
+        Boolean(finishedBook?.finishedOn) &&
+        sharedTask?.assigneeId === memberId &&
+        seenTask?.version === sharedTask?.version &&
+        memberDone.response.ok &&
+        memberDone.body?.task?.status === "done" &&
+        ownerSeesDone?.status === "done" &&
+        ownerSeesDone?.version === sharedTask?.version + 1 &&
+        contactRes.response.ok &&
+        Boolean(contact?.id) &&
+        contact?.circleId === circle?.id &&
+        privateContactRes.response.ok &&
+        privateContact?.circleId === null &&
+        seenContact?.version === contact?.version &&
+        !memberSeesPrivateContact &&
+        noteRes.response.ok &&
+        contactNote?.body === "E2E logged interaction" &&
+        String(notedContact?.lastContactOn || "").slice(0, 10) === contactDay &&
+        notedContact?.version === contact?.version + 1 &&
+        staleContact.response.status === 409 &&
+        staleContact.body?.current?.version === notedContact?.version &&
+        archived.response.ok &&
+        detached?.circleId === null &&
+        detached?.assigneeId === null &&
+        detachedContact?.circleId === null &&
+        detachedProject?.circleId === null &&
+        !memberStillSees;
+
+      record(
+        "Together",
+        ok ? "pass" : "fail",
+        ok
+          ? "personal rows stayed private, a stale write was refused with the current version, a shared contact stayed readable by the circle and a note updated last touch, and rows detached on archive"
+          : JSON.stringify({
+              memberSignUp: memberSignUp.body,
+              requested: requested.body,
+              accepted: accepted.body,
+              personalList: personalListRes.body,
+              personalTask: personalTaskRes.body,
+              memberSeesPersonal,
+              bumped: bumped.body,
+              stale: { status: stale.response.status, body: stale.body },
+              circle: circleRes.body,
+              addedMember: addedMember.body,
+              sharedList: sharedListRes.body,
+              sharedTask: sharedTaskRes.body,
+              category: categoryRes.body,
+              memberCategoryCreate: memberCategoryCreate.body,
+              seenCategory,
+              memberCategoryDelete: memberCategoryDelete.body,
+              project: projectRes.body,
+              milestone: milestoneRes.body,
+              invalidMilestone: { status: invalidMilestone.response.status, body: invalidMilestone.body },
+              seenProject,
+              seenMilestone,
+              milestoneDone: milestoneDone.body,
+              ownerSeesMilestone,
+              book: bookRes.body,
+              seenBook,
+              memberFinishedBook: memberFinishedBook.body,
+              finishedBook,
+              seenTask,
+              memberDone: memberDone.body,
+              ownerSeesDone,
+              archived: archived.body,
+              detached,
+              memberStillSees,
+            }),
+      );
+
+      // Leave the test database tidy: tasks first, then their lists, then the project.
+      for (const id of [personalTask?.id, sharedTask?.id, milestone?.id]) {
+        const row = (afterArchiveOwner.body?.tasks || []).find((task) => task.id === id);
+        if (!row) continue;
+        await jsonFetch(fn + "/tasks/" + encodeURIComponent(id), {
+          method: "DELETE",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ version: row.version }),
+        }).catch(() => {});
+      }
+      for (const id of [personalList?.id, sharedList?.id]) {
+        const row = (afterArchiveOwner.body?.taskLists || []).find((list) => list.id === id);
+        if (!row) continue;
+        await jsonFetch(fn + "/task-lists/" + encodeURIComponent(id), {
+          method: "DELETE",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ version: row.version }),
+        }).catch(() => {});
+      }
+      if (detachedProject) {
+        await jsonFetch(fn + "/projects/" + encodeURIComponent(detachedProject.id), {
+          method: "DELETE",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ version: detachedProject.version }),
+        }).catch(() => {});
+      }
+      const bookRow = (afterArchiveOwner.body?.books || []).find((entry) => entry.id === book?.id);
+      if (bookRow) {
+        await jsonFetch(fn + "/books/" + encodeURIComponent(bookRow.id), {
+          method: "DELETE",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ version: bookRow.version }),
+        }).catch(() => {});
+      }
+      await jsonFetch(fn + "/friends/" + encodeURIComponent(memberId), {
+        method: "DELETE",
+        headers: authHeaders,
+      }).catch(() => {});
+    }
+  }
+
+  // 10. Clean up the E2E documents
   {
     await jsonFetch(fn + "/docs/batch", {
       method: "POST",
