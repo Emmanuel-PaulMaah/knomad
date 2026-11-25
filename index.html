@@ -29,6 +29,7 @@
       --radius: 12px;
       --mono: 'IBM Plex Mono', ui-monospace, monospace;
       --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+      color-scheme: dark;
     }
 
     * { box-sizing: border-box; }
@@ -422,6 +423,8 @@
 
     .charts-grid[hidden] { display: none; }
 
+    .charts-grid.single-chart { grid-template-columns: minmax(0, 1fr); }
+
     .chart-card { display: flex; flex-direction: column; }
 
     .chart-note {
@@ -687,8 +690,24 @@
     }
 
     .upcoming-main { flex: 1; min-width: 0; }
-    .upcoming-main strong { display: block; font-size: 13px; font-weight: 500; }
-    .upcoming-main span {
+
+    .upcoming-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .upcoming-head strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .upcoming-sub {
       display: block;
       color: var(--muted);
       font-size: 12px;
@@ -696,6 +715,29 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    .upcoming-pill {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--bg-2);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9.5px;
+      line-height: 1.5;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .upcoming-pill.interview { color: var(--accent); }
+    .upcoming-pill.reminder { color: var(--amber); }
+    .upcoming-pill.task { color: var(--sage); }
+    .upcoming-pill.crm { color: var(--amber); }
+    .upcoming-pill.project { color: var(--amber); }
 
     .event-kind {
       flex-shrink: 0;
@@ -733,7 +775,8 @@
       white-space: nowrap;
     }
 
-    .event-del {
+    .event-del,
+    .event-gcal {
       flex-shrink: 0;
       width: 26px;
       height: 26px;
@@ -748,7 +791,11 @@
       cursor: pointer;
     }
 
+    .event-gcal { text-decoration: none; }
+
     .event-del:hover { color: var(--red); border-color: rgba(207, 111, 95, 0.3); }
+
+    .event-gcal:hover { color: var(--accent); border-color: var(--accent); }
 
     .event-empty {
       padding: 16px 4px;
@@ -907,7 +954,7 @@
 
     .dash-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
       gap: 16px;
       align-items: stretch;
     }
@@ -1051,6 +1098,177 @@
       font-variant-numeric: tabular-nums;
     }
 
+    /* ---------- Daily read ---------- */
+
+    .daily-read-card { margin-top: 16px; }
+
+    .daily-read {
+      display: grid;
+      grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+      gap: 12px;
+    }
+
+    .daily-read-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+    }
+
+    .daily-read-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .daily-kicker {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .daily-source-tag {
+      color: var(--muted);
+      font-size: 10.5px;
+      white-space: nowrap;
+    }
+
+    .daily-word-line {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0;
+    }
+
+    .daily-word {
+      font-size: 23px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      line-height: 1.15;
+    }
+
+    .daily-pos {
+      color: var(--muted);
+      font-size: 11.5px;
+      font-style: italic;
+    }
+
+    .daily-def {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .daily-context {
+      margin: 0;
+      color: var(--accent);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+
+    .daily-context.muted { color: var(--muted); }
+
+    .daily-context a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .daily-link { align-self: flex-start; margin-top: auto; }
+
+    .daily-article {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .daily-article.no-thumb { grid-template-columns: minmax(0, 1fr); }
+
+    .daily-thumb {
+      width: 96px;
+      height: 72px;
+      object-fit: cover;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+    }
+
+    .daily-article-copy { min-width: 0; }
+
+    .daily-article-title {
+      margin: 0 0 4px;
+      font-size: 14.5px;
+      line-height: 1.3;
+    }
+
+    .daily-article-title a {
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .daily-article-title a:hover { color: var(--accent); }
+
+    .daily-extract {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+
+    .daily-unavailable {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+
+    .daily-skeleton {
+      display: block;
+      height: 11px;
+      border-radius: 4px;
+      background: linear-gradient(90deg, var(--panel), var(--panel-2), var(--panel));
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+    }
+
+    .daily-skeleton.short { width: 42%; height: 9px; }
+
+    .daily-read-empty {
+      grid-column: 1 / -1;
+      padding: 24px 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 12.5px;
+      text-align: center;
+    }
+
+    .daily-read-empty p { margin: 0 0 12px; }
+
+    .daily-read-hint {
+      grid-column: 1 / -1;
+      margin: 0;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    @media (max-width: 760px) {
+      .daily-read { grid-template-columns: 1fr; }
+      .daily-article { grid-template-columns: 1fr; }
+      .daily-thumb { display: none; }
+    }
+
     .empty-state {
       padding: 34px 16px;
       text-align: center;
@@ -1060,69 +1278,6 @@
     }
 
     .empty-state p { margin: 0 0 14px; }
-
-    /* ---------- Resume sheet ---------- */
-
-    .sheet-card { padding: 24px; display: flex; flex-direction: column; }
-
-    .sheet-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 16px;
-    }
-
-    .sheet {
-      position: relative;
-      flex: 1;
-      min-height: 280px;
-      overflow: hidden;
-      padding: 20px 22px;
-      border-radius: 4px;
-      background: var(--paper);
-      color: var(--ink);
-      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(0, 0, 0, 0.06);
-    }
-
-    .sheet::after {
-      content: '';
-      position: absolute;
-      inset: auto 0 0 0;
-      height: 54px;
-      background: linear-gradient(180deg, transparent, var(--paper));
-      pointer-events: none;
-    }
-
-    .sheet-text {
-      margin: 0;
-      font-family: 'IBM Plex Sans', system-ui, sans-serif;
-      font-size: 11px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-word;
-      color: #2b2a26;
-    }
-
-    .sheet-empty {
-      margin: 0;
-      display: grid;
-      place-content: center;
-      height: 160px;
-      text-align: center;
-      font-size: 12px;
-      color: #6d675c;
-    }
-
-    .sheet-meta {
-      margin: 12px 2px 0;
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-    }
 
     /* ---------- Buttons ---------- */
 
@@ -1197,6 +1352,27 @@
     .btn.small { padding: 6px 12px; font-size: 12px; }
     .btn.block { width: 100%; }
 
+    .icon-sprite {
+      position: absolute;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+    }
+
+    .icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .add-toggle .icon { transition: transform 0.15s var(--ease); }
+    .add-toggle[aria-expanded="true"] .icon { transform: rotate(45deg); }
+
     /* ---------- Forms ---------- */
 
     .field { display: grid; gap: 6px; margin-bottom: 16px; }
@@ -1233,12 +1409,12 @@
 
     select {
       appearance: none;
-      background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-                        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-      background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
-      background-size: 5px 5px, 5px 5px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b857a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-position: right 10px center;
+      background-size: 14px 14px;
       background-repeat: no-repeat;
-      padding-right: 32px;
+      padding-right: 34px;
+      cursor: pointer;
     }
 
     .field-help { margin: 0; font-size: 11px; color: var(--muted); }
@@ -1782,6 +1958,10 @@
       gap: 10px;
       margin-top: 22px;
     }
+
+    .confirm-panel { max-width: 460px; }
+    .confirm-panel .eyebrow { color: var(--muted); }
+    .confirm-panel.is-danger .eyebrow { color: var(--red); }
 
     @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
     @keyframes panel-in {
@@ -2508,6 +2688,21 @@
 
     .social-avatar img { width: 100%; height: 100%; object-fit: cover; }
 
+    .social-avatar.is-online {
+      box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--sage);
+    }
+
+    .online-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-left: 6px;
+      border-radius: 50%;
+      background: var(--sage);
+      vertical-align: middle;
+      box-shadow: 0 0 0 3px rgba(147, 179, 154, 0.16);
+    }
+
     .social-person-main {
       flex: 1;
       min-width: 0;
@@ -2763,6 +2958,16 @@
       align-items: start;
     }
 
+    .together-grid.adds-closed { grid-template-columns: minmax(0, 1fr); }
+
+    .card-head-tools {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
     .space-lists {
       display: grid;
       gap: 1px;
@@ -2868,14 +3073,113 @@
       font-size: 12px;
     }
 
+    .task-add-meta select {
+      padding-right: 26px;
+      background-position: right 7px center;
+      background-size: 12px 12px;
+    }
+
     .task-add-meta .btn { margin-left: auto; }
 
-    #togetherScope {
-      width: auto;
-      max-width: 200px;
-      padding: 6px 10px;
+    .scope-picker { position: relative; display: inline-flex; }
+
+    .scope-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 220px;
+      padding: 6px 10px 6px 11px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--bg-2);
+      color: var(--text-2);
+      font-family: inherit;
       font-size: 12px;
+      line-height: 1.2;
+      cursor: pointer;
+      transition: border-color 0.14s var(--ease), color 0.14s var(--ease);
     }
+
+    .scope-trigger:hover,
+    .scope-trigger[aria-expanded="true"] {
+      border-color: var(--line-strong);
+      color: var(--text);
+    }
+
+    .scope-trigger-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .scope-trigger-icon {
+      width: 12px;
+      height: 12px;
+      color: var(--muted);
+      transition: transform 0.14s var(--ease);
+    }
+
+    .scope-trigger[aria-expanded="true"] .scope-trigger-icon { transform: rotate(180deg); }
+
+    .scope-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 40;
+      min-width: 190px;
+      max-width: 260px;
+      max-height: 260px;
+      overflow-y: auto;
+      padding: 5px;
+      border-radius: 10px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .scope-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      padding: 8px 9px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-2);
+      font: inherit;
+      font-size: 12.5px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .scope-option:hover,
+    .scope-option:focus-visible {
+      background: var(--panel-2);
+      color: var(--text);
+    }
+
+    .scope-option[aria-selected="true"] {
+      background: var(--panel-2);
+      color: var(--text);
+    }
+
+    .scope-option-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .scope-option-check {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+      color: var(--accent);
+      opacity: 0;
+    }
+
+    .scope-option[aria-selected="true"] .scope-option-check { opacity: 1; }
 
     #taskAssignee {
       width: auto;
@@ -3585,8 +3889,16 @@
     .cal-scope {
       width: auto;
       max-width: 160px;
-      padding: 6px 8px;
+      padding: 6px 28px 6px 10px;
+      background-position: right 8px center;
+      background-size: 12px 12px;
       font-size: 12px;
+    }
+
+    .upcoming-window {
+      max-width: 74px;
+      padding: 5px 24px 5px 8px;
+      font-size: 11.5px;
     }
 
     .event-kind.task { background: var(--sage); }
@@ -3704,7 +4016,6 @@
       .together-grid { grid-template-columns: 1fr; }
       .form-grid { grid-template-columns: 1fr; }
       .form-grid .span-2 { grid-column: auto; }
-      .sheet { flex: none; max-height: 440px; }
     }
 
     @media (max-width: 760px) {
@@ -3733,8 +4044,6 @@
       .back-btn { width: 34px; height: 34px; }
 
       .hero { padding-bottom: 24px; }
-
-      .sheet { flex: none; max-height: 380px; }
 
       .identity { flex-wrap: wrap; align-items: flex-start; }
       .identity-main h3 { font-size: 18px; }
@@ -3887,6 +4196,8 @@
     }
 
     .checkline strong { color: var(--text); font-weight: 500; }
+
+    .pref-list { display: grid; gap: 10px; }
 
     .provider-row {
       display: flex;
@@ -4082,13 +4393,35 @@
       animation: shimmer 1.2s linear infinite;
     }
 
-    @keyframes shimmer { to { background-position: -200% 0; } }
-
-    .search-foot {
+    @keyframes shimmer { to { background-position: -200% 0; } }    .search-foot {
       margin: 16px 0 0;
       color: var(--muted);
       font-size: 11.5px;
       line-height: 1.6;
+
+    }
+
+    .search-pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .search-pager[hidden] { display: none; }
+
+    .search-pager-note {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 600px) {
+      .search-pager { flex-direction: column; align-items: flex-start; }
     }
 
     @media (max-width: 760px) {
@@ -4110,6 +4443,15 @@
   </style>
 </head>
 <body>
+  <!-- Icons from Lucide (lucide.dev), ISC licensed -->
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.03 6.71 2.71L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  </svg>
+
   <div class="boot-error" id="appBootError" role="alert" hidden>
     <div>
       <strong>knomad could not start.</strong>
@@ -4192,6 +4534,14 @@
 
           <div class="stats-grid" id="statsGrid"></div>
 
+          <div class="card daily-read-card">
+            <div class="card-head">
+              <h3>Word &amp; article of the day</h3>
+              <span class="chart-note" id="dailyReadDate"></span>
+            </div>
+            <div class="daily-read" id="dailyRead" aria-live="polite"></div>
+          </div>
+
           <section class="together-band" aria-labelledby="togetherDashTitle">
             <div class="together-band-head">
               <div>
@@ -4204,7 +4554,7 @@
           </section>
 
           <div class="charts-grid" id="dashCharts">
-            <div class="card chart-card">
+            <div class="card chart-card" id="activityCard">
               <div class="card-head">
                 <h3>Activity</h3>
                 <button class="btn ghost small" data-toggle-chart="activity" aria-label="Collapse activity"><span class="icon" aria-hidden="true">▼</span></button>
@@ -4212,7 +4562,7 @@
               </div>
               <div class="activity" id="activityChart"></div>
             </div>
-            <div class="card chart-card">
+            <div class="card chart-card" id="statusCard">
               <div class="card-head">
                 <h3>Status breakdown</h3>
                 <button class="btn ghost small" data-toggle-chart="status" aria-label="Collapse status breakdown"><span class="icon" aria-hidden="true">▼</span></button>
@@ -4228,7 +4578,14 @@
               <div class="card">
                 <div class="card-head">
                   <h3>Next up</h3>
-                  <button class="btn ghost small" data-page-target="calendar">Calendar</button>
+                  <div class="card-head-tools">
+                    <select class="cal-scope upcoming-window" id="upcomingWindow" aria-label="Timeline covered">
+                      <option value="1d">1d</option>
+                      <option value="7d">7d</option>
+                      <option value="30d">30d</option>
+                    </select>
+                    <button class="btn ghost small" data-page-target="calendar">Calendar</button>
+                  </div>
                 </div>
                 <div class="upcoming-list" id="upcomingList"></div>
               </div>
@@ -4241,20 +4598,6 @@
                 <div class="recent-list" id="recentList"></div>
               </div>
             </div>
-
-            <div class="card sheet-card">
-              <div class="sheet-head">
-                <span class="label-mono">Base resume</span>
-                <button class="btn ghost small" data-page-target="profile">Replace</button>
-              </div>
-              <div class="sheet" id="resumeSheet">
-                <p class="sheet-empty">No resume yet.<br>Add one in your profile.</p>
-              </div>
-              <div class="sheet-meta">
-                <span id="resumeMeta">Not uploaded</span>
-                <span id="resumeWords"></span>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -4262,7 +4605,7 @@
         <section class="page" id="searchPage">
           <div class="page-head">
             <div>
-              <p class="page-desc">Search three public job boards by role, then keep the postings that state your location or hire worldwide.</p>
+              <p class="page-desc">Search four public job boards by role, then keep the postings that state your location or hire worldwide.</p>
               <p class="label-mono" id="jobSearchCount">No search yet</p>
             </div>
           </div>
@@ -4300,12 +4643,16 @@
           </div>
 
           <div id="jobSearchResults" class="job-results" aria-live="polite"></div>
+          <div id="jobSearchPager" class="search-pager" hidden></div>
 
           <p class="search-foot">
             Listings come from the public <a href="https://jobicy.com/jobs" target="_blank" rel="noopener">Jobicy</a>,
-            <a href="https://remoteok.com" target="_blank" rel="noopener follow">Remote OK</a>, and
-            <a href="https://remotive.com/remote-jobs" target="_blank" rel="noopener">Remotive</a> APIs.
-            Eligibility is read from each posting's location field — confirm it on the job page before you apply.
+            <a href="https://remoteok.com" target="_blank" rel="noopener follow">Remote OK</a>,
+            <a href="https://remotive.com/remote-jobs" target="_blank" rel="noopener">Remotive</a>, and
+            <a href="https://aitrainer.work" target="_blank" rel="noopener">aitrainer.work</a> APIs.
+            The AI-training feed covers Mercor, Ethos, Alignerr, Outlier and others under CC BY 4.0; each
+            listing links back to its page there. Eligibility is read from each posting's location field —
+            confirm it on the job page before you apply.
           </p>
         </section>
 
@@ -4317,11 +4664,17 @@
               <p class="label-mono" id="togetherSummary">Sign in to plan with your kniggurs</p>
             </div>
             <div class="social-head-actions" id="togetherActions" hidden>
-              <div id="friendsHeadActions" hidden>
-                <button class="btn primary small" id="friendsSendBtn" type="button">Send a job</button>
+              <div class="scope-picker" id="togetherScopePicker">
+                <button class="scope-trigger" type="button" id="togetherScopeBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="togetherScopeMenu" aria-label="Who to plan with">
+                  <span class="scope-trigger-label" id="togetherScopeLabel">Just me</span>
+                  <svg class="icon scope-trigger-icon" aria-hidden="true"><use href="#icon-chevron-down"/></svg>
+                </button>
+                <div class="scope-menu" id="togetherScopeMenu" role="listbox" aria-label="Who to plan with" hidden></div>
               </div>
-              <select id="togetherScope" aria-label="Who to plan with"></select>
-              <button class="btn ghost small" id="togetherRefreshBtn" type="button">Refresh</button>
+              <button class="btn ghost small" id="togetherRefreshBtn" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>
+                Refresh
+              </button>
               <button class="btn ghost small" type="button" id="circleSettingsBtn" aria-label="Open circle details" data-circle-settings="">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="circle-settings-gear">
                   <circle cx="12" cy="12" r="3"/>
@@ -4344,7 +4697,10 @@
                   </div>
                 </div>
               </div>
-              <button class="btn primary small" id="newCircleBtn" type="button">New circle</button>
+              <button class="btn primary small" id="newCircleBtn" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                New circle
+              </button>
             </div>
           </div>
 
@@ -4356,8 +4712,8 @@
           <div id="togetherSignedIn" hidden>
             <div class="together-bar">
               <div class="together-tabs" role="tablist" aria-label="Together">
-                <button class="together-tab active" type="button" role="tab" data-together-tab="todos" aria-selected="true">To-dos</button>
-                <button class="together-tab" type="button" role="tab" data-together-tab="kniggurs" aria-selected="false">Kniggurs</button>
+                <button class="together-tab active" type="button" role="tab" data-together-tab="kniggurs" aria-selected="true">Kniggurs</button>
+                <button class="together-tab" type="button" role="tab" data-together-tab="todos" aria-selected="false">To-dos</button>
                 <button class="together-tab" type="button" role="tab" data-together-tab="projects" aria-selected="false">Projects</button>
                 <button class="together-tab" type="button" role="tab" data-together-tab="learning" aria-selected="false">Learning</button>
                 <button class="together-tab" type="button" role="tab" data-together-tab="shelf" aria-selected="false">Shelf</button>
@@ -4367,7 +4723,7 @@
 
             <div id="circleSettingsAnchor"></div>
 
-            <div id="togetherKniggurs" hidden>
+            <div id="togetherKniggurs">
               <p class="label-mono" id="friendsSummary">Sign in to add kniggurs</p>
 
               <div id="friendsSignedIn" hidden>
@@ -4375,7 +4731,13 @@
                   <div class="card" id="sharedCard">
                     <div class="card-head">
                       <h3>Shared jobs</h3>
-                      <span class="label-mono" id="inboxCount"></span>
+                      <div class="card-head-tools">
+                        <span class="label-mono" id="inboxCount"></span>
+                        <button class="btn primary small" id="friendsSendBtn" type="button">
+                          <svg class="icon" aria-hidden="true"><use href="#icon-send"/></svg>
+                          Send a job
+                        </button>
+                      </div>
                     </div>
                     <div class="share-tabs" role="tablist" aria-label="Shared jobs">
                       <button class="share-tab" type="button" role="tab" data-share-tab="inbox" aria-selected="true" aria-controls="sharedInbox">
@@ -4390,7 +4752,7 @@
                   </div>
 
                   <div class="stack">
-                    <div class="card">
+                    <div class="card" id="friendAddCard" hidden>
                       <div class="card-head">
                         <h3>Add a Kniggur</h3>
                         <span class="label-mono">By email</span>
@@ -4399,7 +4761,10 @@
                         <label class="sr-only" for="friendEmail">Kniggur's email</label>
                         <div class="friend-add-row">
                           <input type="email" id="friendEmail" placeholder="kniggur@example.com" required>
-                          <button class="btn primary small" id="friendRequestBtn" type="submit">Send request</button>
+                          <button class="btn primary small" id="friendRequestBtn" type="submit">
+                            <svg class="icon" aria-hidden="true"><use href="#icon-send"/></svg>
+                            Send request
+                          </button>
                         </div>
                       </form>
                       <p class="field-help">They need a knomad account. The request waits until they accept it.</p>
@@ -4416,7 +4781,13 @@
                     <div class="card">
                       <div class="card-head">
                         <h3>Kniggurs</h3>
-                        <span class="label-mono" id="friendCount"></span>
+                        <div class="card-head-tools">
+                          <span class="label-mono" id="friendCount"></span>
+                          <button class="btn ghost small add-toggle" type="button" data-add-toggle="friendAddCard" aria-expanded="false">
+                            <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                            <span data-add-label>Add</span>
+                          </button>
+                        </div>
                       </div>
                       <div class="social-list" id="friendList"></div>
                     </div>
@@ -4425,26 +4796,41 @@
               </div>
             </div>
 
-            <div id="togetherTodos">
+            <div id="togetherTodos" hidden>
               <div class="together-grid">
                 <div class="card">
                   <div class="card-head">
                     <h3>Lists</h3>
-                    <span class="label-mono" id="spaceListCount"></span>
+                    <div class="card-head-tools">
+                      <span class="label-mono" id="spaceListCount"></span>
+                      <button class="btn ghost small add-toggle" type="button" data-add-toggle="newListForm" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        <span data-add-label>Add</span>
+                      </button>
+                    </div>
                   </div>
                   <div class="space-lists" id="spaceLists"></div>
-                  <form id="newListForm" class="friend-add-row" autocomplete="off">
+                  <form id="newListForm" class="friend-add-row" autocomplete="off" hidden>
                     <input id="newListName" placeholder="New list" maxlength="80" aria-label="New list name">
-                    <button class="btn ghost small" type="submit">Add</button>
+                    <button class="btn ghost small" type="submit">
+                      <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                      Add
+                    </button>
                   </form>
                 </div>
 
                 <div class="card">
                   <div class="card-head">
                     <h3>To-dos</h3>
-                    <span class="label-mono" id="spaceTaskCount"></span>
+                    <div class="card-head-tools">
+                      <span class="label-mono" id="spaceTaskCount"></span>
+                      <button class="btn ghost small add-toggle" type="button" data-add-toggle="newTaskForm" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        <span data-add-label>Add</span>
+                      </button>
+                    </div>
                   </div>
-                  <form id="newTaskForm" class="task-add" autocomplete="off">
+                  <form id="newTaskForm" class="task-add" autocomplete="off" hidden>
                     <div class="task-add-main">
                       <input id="taskTitle" placeholder="What needs doing?" maxlength="240" aria-label="Task title">
                       <textarea id="taskNotes" rows="2" maxlength="4000" placeholder="Notes (optional)" aria-label="Task notes"></textarea>
@@ -4454,7 +4840,10 @@
                       <label>Project <select id="taskProjectSelect"></select></label>
                       <label>Due <input type="datetime-local" id="taskDue"></label>
                       <select id="taskAssignee" aria-label="Assignee" hidden></select>
-                      <button class="btn primary small" type="submit">Add task</button>
+                      <button class="btn primary small" type="submit">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        Add task
+                      </button>
                     </div>
                   </form>
                   <div class="space-tasks" id="spaceTasks"></div>
@@ -4463,8 +4852,8 @@
             </div>
 
             <div id="togetherProjects" hidden>
-              <div class="together-grid">
-                <div class="card">
+              <div class="together-grid adds-closed">
+                <div class="card add-card" id="projectAddCard" hidden>
                   <div class="card-head">
                     <h3>Start a project</h3>
                     <span class="label-mono">Shared in this scope</span>
@@ -4490,14 +4879,23 @@
                       </div>
                     </div>
                     <p class="field-help">Projects hold tasks and milestones. A milestone counts toward the progress bar.</p>
-                    <button class="btn primary small" type="submit">Add project</button>
+                    <button class="btn primary small" type="submit">
+                      <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                      Add project
+                    </button>
                   </form>
                 </div>
 
                 <div class="card">
                   <div class="card-head">
                     <h3>Projects</h3>
-                    <span class="label-mono" id="projectCount">Nothing yet</span>
+                    <div class="card-head-tools">
+                      <span class="label-mono" id="projectCount">Nothing yet</span>
+                      <button class="btn ghost small add-toggle" type="button" data-add-toggle="projectAddCard" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        <span data-add-label>Add</span>
+                      </button>
+                    </div>
                   </div>
                   <div class="project-list" id="projectList"></div>
                 </div>
@@ -4505,8 +4903,8 @@
             </div>
 
             <div id="togetherShelf" hidden>
-              <div class="together-grid">
-                <div class="card">
+              <div class="together-grid adds-closed">
+                <div class="card add-card" id="bookAddCard" hidden>
                   <div class="card-head">
                     <h3>Add a book</h3>
                     <span class="label-mono">Shared in this scope</span>
@@ -4529,7 +4927,10 @@
                         <input id="bookPages" type="number" min="0" max="20000" step="1" placeholder="0">
                       </div>
                     </div>
-                    <button class="btn primary small" type="submit">Add to shelf</button>
+                    <button class="btn primary small" type="submit">
+                      <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                      Add to shelf
+                    </button>
                   </form>
                   <div class="shelf-categories" id="shelfCategories"></div>
                 </div>
@@ -4537,7 +4938,13 @@
                 <div class="card">
                   <div class="card-head">
                     <h3>Shelf</h3>
-                    <span class="label-mono" id="shelfCount"></span>
+                    <div class="card-head-tools">
+                      <span class="label-mono" id="shelfCount"></span>
+                      <button class="btn ghost small add-toggle" type="button" data-add-toggle="bookAddCard" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        <span data-add-label>Add</span>
+                      </button>
+                    </div>
                   </div>
                   <div class="shelf-filters">
                     <div class="shelf-tabs" role="tablist" aria-label="Shelf">
@@ -4557,8 +4964,8 @@
             </div>
 
             <div id="togetherCrm" hidden>
-              <div class="together-grid">
-                <div class="card">
+              <div class="together-grid adds-closed">
+                <div class="card add-card" id="contactAddCard" hidden>
                   <div class="card-head">
                     <h3>Add a contact</h3>
                     <span class="label-mono" id="contactScopeNote">Only you</span>
@@ -4611,7 +5018,10 @@
                       <label for="contactFollowUpNew">Next follow-up</label>
                       <input id="contactFollowUpNew" type="date">
                     </div>
-                    <button class="btn primary small" type="submit">Add contact</button>
+                    <button class="btn primary small" type="submit">
+                      <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                      Add contact
+                    </button>
                   </form>
                   <p class="field-help">Contacts are private to you unless you add them while a circle is selected.</p>
                 </div>
@@ -4619,7 +5029,13 @@
                 <div class="card">
                   <div class="card-head">
                     <h3>Contacts</h3>
-                    <span class="label-mono" id="contactCount">0 contacts</span>
+                    <div class="card-head-tools">
+                      <span class="label-mono" id="contactCount">0 contacts</span>
+                      <button class="btn ghost small add-toggle" type="button" data-add-toggle="contactAddCard" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
+                        <span data-add-label>Add</span>
+                      </button>
+                    </div>
                   </div>
                   <div class="contact-filters">
                     <input id="contactSearch" type="search" maxlength="120" placeholder="Search name, company, or tag" aria-label="Search contacts">
@@ -4951,15 +5367,36 @@
             <div class="card">
               <div class="card-head">
                 <h3>Dashboard</h3>
-                <span class="label-mono">Activity &amp; status</span>
+                <span class="label-mono">Charts</span>
               </div>
               <p style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px;">
-                The dashboard charts count applications added, tasks completed, and books finished, including your circles. Turn them off to keep the dashboard focused on applications and Together.
+                Choose which charts sit under the dashboard metrics. Activity counts applications added, tasks completed, and books finished; Status breakdown shows application statuses plus your Together totals.
               </p>
-              <label class="checkline" for="dashInsightsToggle">
-                <input type="checkbox" id="dashInsightsToggle">
-                <span>Show <strong>Activity</strong> and <strong>Status breakdown</strong> on the dashboard</span>
-              </label>
+              <div class="pref-list">
+                <label class="checkline" for="dashActivityToggle">
+                  <input type="checkbox" id="dashActivityToggle">
+                  <span>Show <strong>Activity</strong> on the dashboard</span>
+                </label>
+                <label class="checkline" for="dashStatusToggle">
+                  <input type="checkbox" id="dashStatusToggle">
+                  <span>Show <strong>Status breakdown</strong> on the dashboard</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>Daily read</h3>
+                <span class="label-mono">Wikipedia portal</span>
+              </div>
+              <p style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px;">
+                Picks the portal behind the dashboard article of the day. The Wiktionary word stays the same; only the Wikipedia article changes. Auto follows your headline, summary, and skills, and falls back to the general feed when nothing matches.
+              </p>
+              <div class="field">
+                <label for="dailyPortalSelect">Article portal</label>
+                <select id="dailyPortalSelect"><option value="auto">Auto — from my profile</option></select>
+              </div>
+              <p class="field-help" id="dailyPortalHelp">Uses your headline, summary, and skills to pick a portal.</p>
             </div>
 
             <div class="card">
@@ -5429,6 +5866,19 @@
           </div>
           <button class="btn primary small" type="submit">Log interaction</button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm destructive action -->
+  <div class="modal" id="confirmModal" hidden>
+    <div class="modal-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+      <p class="eyebrow" id="confirmEyebrow">Destructive action</p>
+      <h2 id="confirmTitle">Are you sure?</h2>
+      <p class="modal-sub" id="confirmMessage"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="confirmCancelBtn">Cancel</button>
+        <button type="button" class="btn danger" id="confirmAcceptBtn">Delete</button>
       </div>
     </div>
   </div>

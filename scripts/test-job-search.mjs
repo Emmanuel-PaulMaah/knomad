@@ -10,6 +10,7 @@ import {
   resolveTarget,
   roleMatchScore,
   roleTokens,
+  searchAiTrainingPage,
   searchJobs,
   sortJobs
 } from '../job-search.js';
@@ -180,6 +181,141 @@ test('provider adapters normalize the fields the UI needs', () => {
   assert.equal(remoteok[0].location, 'Remote: Africa only');
   assert.doesNotMatch(remoteok[0].description, /mention the word/i);
   assert.equal(classifyEligibility(remoteok[0].location, 'Nigeria').eligible, true);
+});
+
+test('AI-training feed keeps platform, pay, and the required listing link', () => {
+  const jobs = normalizeProviderJobs('aitrainer', {
+    jobs: [
+      {
+        id: 'mercor-software-expert',
+        platform: 'mercor',
+        title: 'Software Engineering Expert',
+        url: 'https://aitrainer.work/jobs/mercor/software-engineering-expert?utm_source=api',
+        geographic_restrictions: ['Remote', 'Africa'],
+        eligible_countries: null,
+        pay_text: '$70-120/hr',
+        pay_model: 'hourly',
+        domain: 'Software Engineering',
+        search_tags: ['Software Engineering', 'Expert'],
+        first_seen: '2026-11-20T10:00:00.000Z'
+      },
+      {
+        id: 'ethos-expert-call',
+        platform: 'ethos',
+        title: 'Expert Calls: AI Platform Buyers',
+        url: 'https://aitrainer.work/jobs/ethos/expert-calls',
+        geographic_restrictions: ['Remote'],
+        eligible_countries: ['Nigeria'],
+        pay_text: '$350 per interview',
+        domain: 'Business',
+        required_skills: ['enterprise ai'],
+        first_seen: '2026-11-19T10:00:00.000Z'
+      }
+    ]
+  });
+
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0].company, 'Mercor');
+  assert.equal(jobs[0].provider, 'aitrainer.work');
+  assert.equal(jobs[0].url, 'https://aitrainer.work/jobs/mercor/software-engineering-expert?utm_source=api');
+  assert.equal(jobs[0].providerHome, jobs[0].url);
+  assert.equal(jobs[0].salary, '$70-120/hr');
+  assert.equal(jobs[0].type, 'Contract');
+  assert.deepEqual(jobs[0].tags, ['Software Engineering', 'Expert']);
+  assert.equal(classifyEligibility(jobs[0].location, 'Nigeria').eligible, true);
+  assert.equal(jobs[1].company, 'Ethos');
+  assert.equal(jobs[1].location, 'Nigeria');
+  assert.equal(classifyEligibility(jobs[1].location, 'Nigeria').eligible, true);
+});
+
+test('searchJobs includes AI-training roles without hiding the other providers', async () => {
+  clearJobSearchCache();
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    if (url.includes('aitrainer.work')) {
+      return {
+        ok: true,
+        json: async () => ({
+          jobs: [{
+            id: 'mercor-1',
+            platform: 'mercor',
+            title: 'Software Engineering Expert',
+            url: 'https://aitrainer.work/jobs/mercor/software-engineering-expert',
+            geographic_restrictions: ['Remote', 'Africa'],
+            domain: 'Software Engineering',
+            pay_text: '$90/hr'
+          }]
+        })
+      };
+    }
+    return { ok: true, json: async () => ({ jobs: [] }) };
+  };
+
+  const result = await searchJobs('software engineering', { target: 'Nigeria', fetchImpl });
+
+  assert.ok(urls.some((url) => /aitrainer\.work\/api\/jobs\.json\?.*compact=1/.test(url)));
+  assert.equal(result.providers.find((provider) => provider.id === 'aitrainer').status, 'ok');
+  assert.equal(result.providers.find((provider) => provider.id === 'aitrainer').count, 1);
+  const job = result.jobs.find((entry) => entry.providerId === 'aitrainer');
+  assert.ok(job);
+  assert.equal(job.eligibility.eligible, true);
+});
+
+test('searchAiTrainingPage fetches the requested offset and reports the next one', async () => {
+  clearJobSearchCache();
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    return {
+      ok: true,
+      json: async () => ({
+        returned: 500,
+        total: 5695,
+        next_offset: 1000,
+        jobs: [{
+          id: 'ethos-2',
+          platform: 'ethos',
+          title: 'Data Annotation Expert',
+          url: 'https://aitrainer.work/jobs/ethos/data-annotation-expert',
+          eligible_countries: ['Nigeria'],
+          search_tags: ['Data Annotation'],
+          pay_text: '$40/hr'
+        }]
+      })
+    };
+  };
+
+  const page = await searchAiTrainingPage('data annotation', {
+    target: 'Nigeria',
+    offset: 500,
+    fetchImpl
+  });
+
+  assert.equal(page.offset, 500);
+  assert.equal(page.total, 5695);
+  assert.equal(page.loaded, 500);
+  assert.equal(page.nextOffset, 1000);
+  assert.equal(page.jobs.length, 1);
+  assert.equal(page.jobs[0].company, 'Ethos');
+  assert.equal(page.jobs[0].eligibility.eligible, true);
+  assert.ok(urls.some((url) => /offset=500/.test(url)));
+});
+
+test('searchAiTrainingPage stops when the feed has no next offset', async () => {
+  clearJobSearchCache();
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ returned: 1, total: 1, next_offset: null, jobs: [] })
+  });
+
+  const page = await searchAiTrainingPage('designer', {
+    target: 'Nigeria',
+    offset: 500,
+    fetchImpl
+  });
+
+  assert.equal(page.nextOffset, null);
 });
 
 test('blank provider locations fall back to a stated description hint', () => {

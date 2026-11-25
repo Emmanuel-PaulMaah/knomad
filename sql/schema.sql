@@ -84,6 +84,14 @@ create table if not exists public.knomad_friendships (
 create index if not exists knomad_friendships_b_idx
   on public.knomad_friendships (user_b);
 
+-- Presence is a single heartbeat row per signed-in user. The browser touches it
+-- on the normal social poll; friends are shown online while the row is fresh.
+-- Old rows are harmless and get overwritten the next time that person signs in.
+create table if not exists public.knomad_presence (
+  user_id      text        primary key,
+  last_seen_at timestamptz not null default now()
+);
+
 create table if not exists public.knomad_shares (
   id              uuid        primary key default gen_random_uuid(),
   from_user       text        not null,

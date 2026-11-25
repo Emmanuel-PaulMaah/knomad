@@ -11,7 +11,8 @@
     "db:setup": "node --env-file=.env.local scripts/setup-db.mjs",
     "deploy": "neon deploy --env .env.local",
     "test": "node --env-file=.env.local scripts/test-services.mjs",
-    "test:search": "node scripts/test-job-search.mjs"
+    "test:search": "node scripts/test-job-search.mjs",
+    "test:daily": "node scripts/test-daily-read.mjs"
   },
   "license": "ISC",
   "dependencies": {

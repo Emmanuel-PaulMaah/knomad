@@ -20,9 +20,12 @@ import {
   PROVIDER_LINKS,
   classifyEligibility,
   resolveTarget,
+  searchAiTrainingPage,
   searchJobs,
   sortJobs
 } from './job-search.js';
+
+import { fetchDailyRead, DAILY_PORTALS, resolveDailyPortal } from './daily-read.js';
 
 // The PDF reader's worker ships with the app. It used to be a CDN script with
 // no integrity check, which put the Gemini key in this origin at that CDN's mercy.
@@ -38,7 +41,10 @@ const STORE = {
   cursor: 'knomad_sync_cursor',
   space: 'knomad_space',
   calScope: 'knomad_cal_scope',
-  dashInsights: 'knomad_dash_insights'
+  upcomingWindow: 'knomad_upcoming_window',
+  dashInsights: 'knomad_dash_insights',
+  dashActivity: 'knomad_dash_activity',
+  dashStatus: 'knomad_dash_status'
 };
 
 const STATUS = ['applied', 'interviewing', 'offer', 'rejected'];
@@ -181,8 +187,14 @@ function normalizeProfile(raw) {
     ...raw,
     photo: isProfilePhoto(raw.photo) ? raw.photo : '',
     links: { ...base.links, ...(raw.links || {}) },
-    skills: Array.isArray(raw.skills) ? raw.skills.filter(Boolean) : []
+    dailyPortal: normalizePortalChoice(raw.dailyPortal)
   };
+}
+
+function normalizePortalChoice(value) {
+  const id = String(value || 'auto');
+  if (id === 'auto' || id === 'general') return id;
+  return DAILY_PORTALS.some((portal) => portal.id === id) ? id : 'auto';
 }
 
 function normalizeApplications(raw) {
@@ -778,7 +790,13 @@ async function handleCloudSignUp() {
 }
 
 async function handleCloudSignOut() {
-  if (!confirm('Sign out of cloud sync? Your local data stays on this device.')) return;
+  const ok = await confirmAction({
+    tone: 'neutral',
+    title: 'Sign out of cloud sync?',
+    message: 'Your local data stays on this device.',
+    confirmLabel: 'Sign out'
+  });
+  if (!ok) return;
   setAccountBusy(true);
   try {
     await signOutCloud();
@@ -1080,6 +1098,67 @@ function eventTitle(event) {
   return event.title || eventKindLabel(event);
 }
 
+// ---------------------------------------------------------------- Google Calendar
+
+// Google's `render?action=TEMPLATE` endpoint needs no API key or OAuth. It is a
+// one-way, per-click export: later edits or deletions in knomad do not update
+// the copy already added to Google Calendar.
+function googleCalendarStamp(date) {
+  return date.getFullYear() + pad2(date.getMonth() + 1) + pad2(date.getDate()) +
+    'T' + pad2(date.getHours()) + pad2(date.getMinutes()) + pad2(date.getSeconds());
+}
+
+function googleCalendarTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+}
+
+function googleCalendarUrl(item) {
+  const title = item.title || 'knomad event';
+  const details = [item.details, 'Added from knomad'].filter(Boolean).join(' · ');
+  const params = new URLSearchParams({ action: 'TEMPLATE', text: title });
+
+  if (item.allDay) {
+    // All-day dates are plain YYYYMMDD, and Google treats the end date as
+    // exclusive, so a one-day event ends on the following day.
+    const start = dayKey(item.at);
+    if (!start) return '';
+    const next = new Date(start + 'T00:00:00');
+    next.setDate(next.getDate() + 1);
+    params.set('dates', start.replace(/-/g, '') + '/' + dayKey(next).replace(/-/g, ''));
+  } else {
+    const start = new Date(item.at);
+    if (Number.isNaN(start.getTime())) return '';
+    // Events in knomad only store a start, so give Google a sensible block.
+    const minutes = Number(item.durationMinutes) > 0 ? Number(item.durationMinutes) : 60;
+    const end = new Date(start.getTime() + minutes * 60000);
+    params.set('dates', googleCalendarStamp(start) + '/' + googleCalendarStamp(end));
+    const timeZone = googleCalendarTimeZone();
+    if (timeZone) params.set('ctz', timeZone);
+  }
+
+  if (details) params.set('details', details);
+  return 'https://calendar.google.com/calendar/render?' + params.toString();
+}
+
+function googleCalendarIcon() {
+  return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round" aria-hidden="true">' +
+    '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>' +
+    '<path d="M12 13v4M10 15h4"/></svg>';
+}
+
+function googleCalendarLink(item) {
+  const href = googleCalendarUrl(item);
+  if (!href) return '';
+  return '<a class="event-gcal" href="' + escapeHtml(href) + '" target="_blank" ' +
+    'rel="noopener noreferrer" title="Add to Google Calendar" ' +
+    'aria-label="Add to Google Calendar">' + googleCalendarIcon() + '</a>';
+}
+
 function allEvents() {
   return state.applications
     .reduce((list, app) => {
@@ -1181,14 +1260,32 @@ function refreshCurrentPage() {
 
 // ---------------------------------------------------------------- Dashboard
 
-// Activity and Status breakdown are a preference, not data: hiding them keeps
-// the dashboard narrow without touching the applications behind them.
-let dashInsights = localStorage.getItem(STORE.dashInsights) !== 'off';
+// Activity and Status breakdown are independent preferences, not data: each
+// chart can be hidden without touching the applications or Together rows
+// behind them. Older builds stored one shared `knomad_dash_insights` flag, so
+// an existing "off" keeps both charts off until the person chooses again.
+const legacyDashInsights = localStorage.getItem(STORE.dashInsights);
+
+function readDashChartPref(key) {
+  const stored = localStorage.getItem(key);
+  if (stored === 'on') return true;
+  if (stored === 'off') return false;
+  return legacyDashInsights !== 'off';
+}
+
+let dashActivity = readDashChartPref(STORE.dashActivity);
+let dashStatus = readDashChartPref(STORE.dashStatus);
+
+function saveDashChartPref(key, enabled) {
+  localStorage.setItem(key, enabled ? 'on' : 'off');
+  // Retire the old shared flag once either chart has its own choice.
+  localStorage.removeItem(STORE.dashInsights);
+}
 
 function refreshDashboardInsights() {
-  if (!dashInsights || currentPage !== 'dashboard') return;
-  renderActivity(state.applications);
-  renderStatusChart(state.applications);
+  if (currentPage !== 'dashboard') return;
+  if (dashActivity) renderActivity(state.applications);
+  if (dashStatus) renderStatusChart(state.applications);
 }
 
 function renderDashboard() {
@@ -1230,14 +1327,20 @@ function renderDashboard() {
   renderChips(profile);
   renderStats(applications);
   const charts = $('#dashCharts');
-  if (charts) charts.hidden = !dashInsights;
-  if (dashInsights) {
-    renderActivity(applications);
-    renderStatusChart(applications);
+  if (charts) {
+    charts.hidden = !dashActivity && !dashStatus;
+    charts.classList.toggle('single-chart', dashActivity !== dashStatus);
   }
+  const activityCard = $('#activityCard');
+  if (activityCard) activityCard.hidden = !dashActivity;
+  const statusCard = $('#statusCard');
+  if (statusCard) statusCard.hidden = !dashStatus;
+  if (dashActivity) renderActivity(applications);
+  if (dashStatus) renderStatusChart(applications);
   renderUpcoming();
   renderTogetherDash();
   renderRecent(applications);
+  renderDailyRead();
 
   // Collapsible chart toggles
   $$('[data-toggle-chart]').forEach((btn) => {
@@ -1568,28 +1671,321 @@ function renderRecent(applications) {
   }).join('');
 }
 
-function renderUpcoming() {
-  const host = $('#upcomingList');
-  if (!host) return;
+// ---------------------------------------------------------------- Daily read
 
-  const now = Date.now();
-  const upcoming = allEvents().filter(({ event }) => new Date(event.at).getTime() >= now);
+const dailyReadState = {
+  key: '',
+  status: 'idle', // idle | loading | done | error
+  data: null,
+  error: ''
+};
 
-  if (!upcoming.length) {
-    host.innerHTML = '<div class="event-empty">Nothing scheduled. Add an interview from any application</div>';
+function shortHash(value) {
+  let hash = 5381;
+  const text = String(value || '');
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ text.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function dailyReadFingerprint() {
+  const profile = state.profile || {};
+  return [
+    profile.headline,
+    profile.summary,
+    profile.resumeText,
+    profile.dailyPortal || 'auto',
+    ...(Array.isArray(profile.skills) ? profile.skills : [])
+  ].join('|');
+}
+
+function dailyReadKey() {
+  const today = new Date();
+  return today.getFullYear() + '-' + (today.getMonth() + 1) + '-' + today.getDate() +
+    ':' + shortHash(dailyReadFingerprint());
+}
+
+function dailyReadKeywords() {
+  const profile = state.profile || {};
+  const detected = findKeywords([profile.headline, profile.summary, profile.resumeText].join(' '));
+  const merged = [];
+  [...(Array.isArray(profile.skills) ? profile.skills : []), ...detected].forEach((skill) => {
+    const text = String(skill || '').trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (merged.some((item) => item.toLowerCase() === key)) return;
+    merged.push(text);
+  });
+  return merged.slice(0, 12);
+}
+
+function clipDailyText(value, limit) {
+  const text = String(value || '').trim();
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const space = cut.lastIndexOf(' ');
+  return (space > limit * 0.6 ? cut.slice(0, space) : cut)
+    .replace(/[.,;:\s]+$/, '') + '…';
+}
+
+function safeDailyImage(url) {
+  const value = String(url || '');
+  // Keep to Commons-hosted images. Some Wikipedia articles use locally hosted
+  // fair-use files that should not be republished in this dashboard.
+  return /^https:\/\/(upload|thumb)\.wikimedia\.org\/wikipedia\/commons\//.test(value) ? value : '';
+}
+
+function dailyWordHtml(word) {
+  if (!word) {
+    return '<article class="daily-read-pane">' +
+      '<div class="daily-read-head"><span class="daily-kicker">Word of the day</span>' +
+      '<span class="daily-source-tag">Wiktionary</span></div>' +
+      '<p class="daily-unavailable">Today’s word could not be loaded.</p>' +
+      '</article>';
+  }
+
+  const tie = word.matched && word.matched.length
+    ? '<p class="daily-context">On your resume: ' + escapeHtml(word.matched.slice(0, 3).join(', ')) + '</p>'
+    : '';
+
+  return '<article class="daily-read-pane">' +
+    '<div class="daily-read-head"><span class="daily-kicker">Word of the day</span>' +
+    '<span class="daily-source-tag">Wiktionary</span></div>' +
+    '<p class="daily-word-line">' +
+      '<span class="daily-word">' + escapeHtml(word.word) + '</span>' +
+      (word.partOfSpeech ? '<span class="daily-pos">' + escapeHtml(word.partOfSpeech) + '</span>' : '') +
+    '</p>' +
+    '<p class="daily-def">' + escapeHtml(clipDailyText(word.definition, 270) || 'No definition returned.') + '</p>' +
+    tie +
+    '<a class="btn ghost small daily-link" href="' + escapeHtml(word.url) + '" target="_blank" ' +
+      'rel="noopener noreferrer">Open entry ↗</a>' +
+    '</article>';
+}
+
+function dailyArticleHtml(article) {
+  if (!article) {
+    return '<article class="daily-read-pane">' +
+      '<div class="daily-read-head"><span class="daily-kicker">Article of the day</span>' +
+      '<span class="daily-source-tag">Wikipedia</span></div>' +
+      '<p class="daily-unavailable">Today’s article could not be loaded.</p>' +
+      '</article>';
+  }
+
+  const portal = article.portal;
+  const thumb = article.thumbnail || '';
+  const portalLink = portal
+    ? '<a class="daily-context-link" href="' + escapeHtml(portal.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(portal.label) + '</a>'
+    : '';
+  const tie = article.matched && article.matched.length
+    ? '<p class="daily-context">' +
+        (article.pickedForResume ? 'Picked for your resume: ' : 'On your resume: ') +
+        escapeHtml(article.matched.slice(0, 3).join(', ')) +
+        (portal ? ' · from the ' + portalLink + ' portal.' : '') +
+        '</p>'
+    : (portal
+        ? '<p class="daily-context">From the ' + portalLink + ' portal.</p>'
+        : '<p class="daily-context muted">A general read from today’s Wikipedia feed.</p>');
+
+  return '<article class="daily-read-pane">' +
+    '<div class="daily-read-head"><span class="daily-kicker">Article of the day</span>' +
+    '<span class="daily-source-tag">' + escapeHtml(article.sourceLabel || 'Wikipedia') + '</span></div>' +
+    '<div class="daily-article' + (thumb ? '' : ' no-thumb') + '">' +
+      (thumb
+        ? '<img class="daily-thumb" src="' + escapeHtml(thumb) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
+        : '') +
+      '<div class="daily-article-copy">' +
+        '<h4 class="daily-article-title"><a href="' + escapeHtml(article.url) + '" target="_blank" ' +
+          'rel="noopener noreferrer">' + escapeHtml(article.title) + '</a></h4>' +
+        '<p class="daily-extract">' + escapeHtml(clipDailyText(article.extract, 300) || 'No summary returned.') + '</p>' +
+      '</div>' +
+    '</div>' +
+    tie +
+    '<a class="btn ghost small daily-link" href="' + escapeHtml(article.url) + '" target="_blank" ' +
+      'rel="noopener noreferrer">Read on Wikipedia ↗</a>' +
+    '</article>';
+}
+
+function renderDailyRead() {
+  const host = $('#dailyRead');
+  if (!host || currentPage !== 'dashboard') return;
+
+  const key = dailyReadKey();
+  if (dailyReadState.key !== key) {
+    dailyReadState.key = key;
+    dailyReadState.status = 'idle';
+    dailyReadState.data = null;
+    dailyReadState.error = '';
+  }
+
+  if (dailyReadState.status === 'idle') {
+    loadDailyRead();
     return;
   }
 
-  host.innerHTML = upcoming.slice(0, 5).map(({ app, event }) => {
-    return '<button class="upcoming-row" type="button" data-view="' + escapeHtml(app.id) + '">' +
-      '<span class="upcoming-when">' + escapeHtml(relativeDay(event.at)) + ' <br>' + escapeHtml(formatTime(event.at)) + '</span>' +
-      '<span class="event-kind' + (event.kind === 'reminder' ? ' reminder' : '') + '"></span>' +
-      '<span class="upcoming-main">' +
-      '<strong>' + escapeHtml(eventTitle(event)) + '</strong>' +
-      '<span>' + escapeHtml((app.company || 'Unknown company') + ' · ' + (app.position || 'Untitled role')) + '</span>' +
+  const dateEl = $('#dailyReadDate');
+  if (dateEl) {
+    dateEl.textContent = dailyReadState.data
+      ? dailyReadState.data.dateLabel
+      : formatDate(new Date());
+  }
+
+  if (dailyReadState.status === 'loading') {
+    host.innerHTML =
+      '<div class="daily-read-pane"><span class="daily-skeleton short"></span>' +
+      '<span class="daily-skeleton"></span><span class="daily-skeleton"></span></div>' +
+      '<div class="daily-read-pane"><span class="daily-skeleton short"></span>' +
+      '<span class="daily-skeleton"></span><span class="daily-skeleton"></span></div>';
+    return;
+  }
+
+  if (dailyReadState.status === 'error') {
+    host.innerHTML = '<div class="daily-read-empty">' +
+      '<p>' + escapeHtml(dailyReadState.error || 'Today’s word and article could not be loaded.') + '</p>' +
+      '<button class="btn ghost small" type="button" data-retry-daily>Try again</button>' +
+      '</div>';
+    return;
+  }
+
+  if (!dailyReadState.data) return;
+  const data = dailyReadState.data;
+  const hint = !dailyReadKeywords().length
+    ? '<p class="daily-read-hint">Add skills or a resume to connect these reads to your work.</p>'
+    : '';
+  host.innerHTML = dailyWordHtml(data.word) + dailyArticleHtml(data.article) + hint;
+}
+
+async function loadDailyRead() {
+  const key = dailyReadState.key;
+  dailyReadState.status = 'loading';
+  dailyReadState.error = '';
+  renderDailyRead();
+
+  try {
+    const data = await fetchDailyRead({
+      keywords: dailyReadKeywords(),
+      portal: state.profile.dailyPortal || 'auto',
+      profile: state.profile
+    });
+    if (dailyReadState.key !== key) return;
+    dailyReadState.data = data;
+    if (!data.word && !data.article) {
+      dailyReadState.status = 'error';
+      dailyReadState.error = [data.errors && data.errors.wikipedia, data.errors && data.errors.wiktionary]
+        .filter(Boolean).join(' ') || 'Today’s word and article could not be loaded.';
+    } else {
+      dailyReadState.status = 'done';
+    }
+  } catch (err) {
+    if (dailyReadState.key !== key) return;
+    dailyReadState.status = 'error';
+    dailyReadState.error = err && err.message ? err.message : 'Today’s word and article could not be loaded.';
+  }
+
+  renderDailyRead();
+}
+
+function dashboardUpcomingItems(limit = 5) {
+  const now = Date.now();
+  const todayStart = startOfDay(new Date(now)).getTime();
+  const days = UPCOMING_WINDOWS[upcomingWindow] || 7;
+  const horizon = todayStart + days * DAY_MS;
+  return scheduleItems()
+    .filter((item) => !item.done)
+    .filter((item) => {
+      const at = new Date(item.at).getTime();
+      if (!Number.isFinite(at)) return false;
+      // An all-day item stays "upcoming" for its whole day, even after 09:00.
+      if (item.allDay) {
+        const day = startOfDay(item.at).getTime();
+        return day >= todayStart && day < horizon;
+      }
+      return at >= now && at <= horizon;
+    })
+    .slice(0, limit);
+}
+
+function upcomingPill(item) {
+  let label = 'Project';
+  let tone = 'project';
+  if (item.source === 'application') {
+    label = eventKindLabel(item.event);
+    tone = item.kind === 'reminder' ? 'reminder' : 'interview';
+  } else if (item.source === 'task') {
+    label = 'To-do';
+    tone = 'task';
+  } else if (item.source === 'crm') {
+    label = 'Follow-up';
+    tone = 'crm';
+  }
+  return '<span class="upcoming-pill ' + tone + '">' + escapeHtml(label) + '</span>';
+}
+
+// Returns HTML so an assignee's presence dot can sit beside their name.
+function upcomingSubtitle(item) {
+  if (item.source === 'application') {
+    const app = item.app || {};
+    return escapeHtml((app.company || 'Unknown company') + ' · ' + (app.position || 'Untitled role'));
+  }
+  if (item.source === 'task') {
+    const task = item.task || {};
+    const list = task.listId ? findSpaceList(task.listId) : null;
+    const where = list ? list.name : (item.circleId ? circleName(item.circleId) : 'Personal to-do');
+    return escapeHtml(where) + (task.assigneeId ? ' · ' + personNameHtml(task.assigneeId) : '');
+  }
+  if (item.source === 'crm') {
+    const contact = item.contact || {};
+    const where = item.circleId ? circleName(item.circleId) : 'Personal contact';
+    return escapeHtml((contact.company ? contact.company + ' · ' : '') + where);
+  }
+  const project = item.project || {};
+  const status = PROJECT_STATUS_LABEL[project.status] || 'Active';
+  return escapeHtml((item.circleId ? circleName(item.circleId) : 'Personal project') + ' · ' + status);
+}
+
+function upcomingRowHtml(item) {
+  const whenTop = relativeDay(item.at);
+  const whenBottom = item.allDay ? 'All day' : formatTime(item.at);
+  let action = '';
+  if (item.source === 'application' && item.app) {
+    action = 'data-view="' + escapeHtml(item.app.id) + '"';
+  } else if (item.source === 'task') {
+    action = 'data-cal-task-open="' + escapeHtml(item.sourceId) + '"';
+  } else if (item.source === 'crm') {
+    action = 'data-cal-contact-open="' + escapeHtml(item.sourceId) + '"';
+  } else {
+    action = 'data-cal-project-open="' + escapeHtml(item.sourceId) + '"';
+  }
+
+  return '<button class="upcoming-row" type="button" ' + action + '>' +
+    '<span class="upcoming-when">' + escapeHtml(whenTop) + '<br>' + escapeHtml(whenBottom) + '</span>' +
+    '<span class="upcoming-main">' +
+      '<span class="upcoming-head">' +
+        '<strong>' + escapeHtml(item.title) + '</strong>' +
+        upcomingPill(item) +
       '</span>' +
-      '</button>';
-  }).join('');
+      '<span class="upcoming-sub">' + upcomingSubtitle(item) + '</span>' +
+    '</span>' +
+  '</button>';
+}
+
+function renderUpcoming() {
+  const windowSelect = $('#upcomingWindow');
+  if (windowSelect) windowSelect.value = upcomingWindow;
+
+  const host = $('#upcomingList');
+  if (!host) return;
+
+  const upcoming = dashboardUpcomingItems();
+  if (!upcoming.length) {
+    const days = UPCOMING_WINDOWS[upcomingWindow] || 7;
+    const label = days === 1 ? 'today' : 'the next ' + days + ' days';
+    host.innerHTML = '<div class="event-empty">Nothing scheduled for ' + label +
+      '. Add an interview, a to-do due date, or a follow-up</div>';
+    return;
+  }
+
+  host.innerHTML = upcoming.map(upcomingRowHtml).join('');
 }
 
 // Together is a peer of Jobs on the Dashboard, not a tab buried inside it.
@@ -1667,7 +2063,7 @@ function renderTogetherDash() {
         '<span class="together-dash-main">' +
           '<strong>' + escapeHtml(task.title) + '</strong>' +
           '<span>' + escapeHtml(task.circleId ? circleName(task.circleId) : 'Just me') +
-            (task.assigneeId ? ' · ' + escapeHtml(personName(task.assigneeId)) : '') +
+            (task.assigneeId ? ' · ' + personNameHtml(task.assigneeId) : '') +
           '</span>' +
         '</span>' +
       '</button>'
@@ -1729,33 +2125,13 @@ function renderTogetherDash() {
 
 function refreshDashboardSpace() {
   if (currentPage !== 'dashboard') return;
+  renderUpcoming();
   renderTogetherDash();
   refreshDashboardInsights();
 }
 
 function statusBadge(status) {
   return '<span class="badge ' + escapeHtml(status) + '">' + STATUS_LABEL[status] + '</span>';
-}
-
-function renderResumeSheet(profile) {
-  const sheet = $('#resumeSheet');
-  const meta = $('#resumeMeta');
-  const words = $('#resumeWords');
-  if (meta) meta.textContent = profile.resumeText ? (profile.resumeFileName || 'Pasted resume') : 'Not uploaded';
-  if (words) words.textContent = profile.resumeText ? wordCount(profile.resumeText) + ' words' : '';
-  if (!sheet) return;
-
-  if (!profile.resumeText) {
-    sheet.innerHTML = '<p class="sheet-empty">No resume yet.<br>Add one in your profile.</p>';
-    return;
-  }
-
-  const snippet = profile.resumeText.slice(0, 2000);
-  sheet.innerHTML = '';
-  const pre = document.createElement('pre');
-  pre.className = 'sheet-text';
-  pre.textContent = snippet;
-  sheet.appendChild(pre);
 }
 
 // ---------------------------------------------------------------- Tracker
@@ -1834,7 +2210,13 @@ const jobSearch = {
   jobs: [],
   providers: [],
   error: '',
-  fetchedAt: null
+  fetchedAt: null,
+  aiOffset: null,
+  aiTotal: 0,
+  aiLoaded: 0,
+  aiLoading: false,
+  aiNote: '',
+  aiRequest: 0
 };
 
 function renderJobSearch() {
@@ -1850,6 +2232,7 @@ function renderJobSearch() {
   updateSearchTargetLabel();
   renderSearchProviders();
   renderSearchResults();
+  renderSearchPager();
 }
 
 function updateSearchTargetLabel() {
@@ -1965,7 +2348,7 @@ function renderSearchResults() {
   }
 
   if (jobSearch.status === 'loading') {
-    if (count) count.textContent = 'Searching three providers…';
+    if (count) count.textContent = 'Searching ' + PROVIDER_LINKS.length + ' providers…';
     host.innerHTML = '<div class="job-skeleton"></div><div class="job-skeleton"></div><div class="job-skeleton"></div>';
     return;
   }
@@ -2019,6 +2402,75 @@ function renderSearchResults() {
       : '');
 }
 
+function renderSearchPager() {
+  const host = $('#jobSearchPager');
+  if (!host) return;
+
+  if (jobSearch.status !== 'done' || !jobSearch.aiOffset) {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+
+  const loaded = Number(jobSearch.aiLoaded) || 0;
+  const total = Number(jobSearch.aiTotal) || 0;
+  const scanning = jobSearch.aiLoading;
+  host.hidden = false;
+  host.innerHTML =
+    '<span class="search-pager-note">AI training · scanned ' + loaded.toLocaleString('en-US') +
+      (total ? ' of ' + total.toLocaleString('en-US') : '') + ' roles' +
+      (jobSearch.aiNote ? ' · ' + escapeHtml(jobSearch.aiNote) : '') + '</span>' +
+    '<button class="btn ghost small" type="button" data-load-ai-more' +
+      (scanning ? ' disabled' : '') + '>' +
+      (scanning ? 'Loading older roles…' : 'Load 500 older roles') +
+    '</button>';
+}
+
+async function loadMoreAiTraining() {
+  if (jobSearch.aiLoading || !jobSearch.aiOffset || jobSearch.status !== 'done') return;
+
+  const query = jobSearch.query;
+  const target = jobSearch.target;
+  const offset = jobSearch.aiOffset;
+  const request = ++jobSearch.aiRequest;
+  jobSearch.aiLoading = true;
+  jobSearch.aiNote = '';
+  renderSearchPager();
+
+  try {
+    const result = await searchAiTrainingPage(query, { target, offset });
+    if (jobSearch.query !== query || jobSearch.target !== target || jobSearch.status !== 'done') return;
+
+    const existing = new Set(jobSearch.jobs.map((job) => String(job.id)));
+    const added = result.jobs.filter((job) => !existing.has(String(job.id)));
+    jobSearch.jobs = jobSearch.jobs.concat(added);
+    jobSearch.aiOffset = result.nextOffset && result.nextOffset !== offset ? result.nextOffset : null;
+    jobSearch.aiTotal = Number(result.total) || jobSearch.aiTotal;
+    jobSearch.aiLoaded = (Number(jobSearch.aiLoaded) || 0) + (Number(result.loaded) || 0);
+
+    const ai = jobSearch.providers.find((provider) => provider.id === 'aitrainer');
+    if (ai) {
+      ai.status = 'ok';
+      ai.count = (Number(ai.count) || 0) + added.length;
+      ai.loaded = jobSearch.aiLoaded;
+      ai.total = jobSearch.aiTotal;
+      ai.nextOffset = jobSearch.aiOffset;
+    }
+
+    if (!added.length) jobSearch.aiNote = 'No new matches in that batch';
+  } catch (err) {
+    if (jobSearch.query !== query || jobSearch.status !== 'done' || jobSearch.aiRequest !== request) return;
+    jobSearch.aiNote = 'That batch could not be loaded';
+    toast(err && err.message ? err.message : 'Could not load older AI-training roles', 'error');
+  } finally {
+    if (jobSearch.aiRequest !== request) return;
+    jobSearch.aiLoading = false;
+    renderSearchProviders();
+    renderSearchResults();
+    renderSearchPager();
+  }
+}
+
 async function handleJobSearchSubmit(event) {
   if (event) event.preventDefault();
 
@@ -2035,9 +2487,14 @@ async function handleJobSearchSubmit(event) {
   jobSearch.target = (targetInput && targetInput.value.trim()) || DEFAULT_TARGET;
   jobSearch.status = 'loading';
   jobSearch.error = '';
+  jobSearch.aiRequest += 1;
+  jobSearch.aiLoading = false;
+  jobSearch.aiNote = '';
+  jobSearch.aiOffset = null;
   updateSearchTargetLabel();
   renderSearchProviders();
   renderSearchResults();
+  renderSearchPager();
 
   const button = $('#jobSearchBtn');
   const label = button ? button.textContent : '';
@@ -2051,6 +2508,13 @@ async function handleJobSearchSubmit(event) {
     jobSearch.jobs = Array.isArray(result.jobs) ? result.jobs : [];
     jobSearch.providers = Array.isArray(result.providers) ? result.providers : [];
     jobSearch.fetchedAt = result.fetchedAt || null;
+
+    const ai = jobSearch.providers.find((provider) => provider.id === 'aitrainer');
+    jobSearch.aiOffset = ai && ai.status !== 'error' ? ai.nextOffset : null;
+    jobSearch.aiTotal = ai ? Number(ai.total) || 0 : 0;
+    jobSearch.aiLoaded = ai ? Number(ai.loaded) || 0 : 0;
+    jobSearch.aiLoading = false;
+    jobSearch.aiNote = '';
 
     const failed = jobSearch.providers.filter((provider) => provider.status === 'error');
     if (failed.length === jobSearch.providers.length && jobSearch.providers.length) {
@@ -2071,6 +2535,7 @@ async function handleJobSearchSubmit(event) {
     }
     renderSearchProviders();
     renderSearchResults();
+    renderSearchPager();
   }
 }
 
@@ -2106,6 +2571,11 @@ function eventRowHtml(app, event, options = {}) {
   const sub = options.detail
     ? when + ' · ' + eventReminderLabel(event)
     : when + ' · ' + (app.company || 'Unknown company');
+  const gcal = googleCalendarLink({
+    title: eventTitle(event),
+    at: event.at,
+    details: (app.company ? app.company + ' · ' : '') + eventKindLabel(event)
+  });
 
   return '<div class="event-row' + past + '">' +
     '<span class="event-kind' + (event.kind === 'reminder' ? ' reminder' : '') + '"></span>' +
@@ -2113,6 +2583,7 @@ function eventRowHtml(app, event, options = {}) {
     '<strong>' + escapeHtml(eventTitle(event)) + '</strong>' +
     '<span>' + escapeHtml(sub) + '</span>' +
     '</span>' +
+    gcal +
     '<button class="event-del" type="button" data-event-del="' + escapeHtml(event.id) + '" title="Remove event" aria-label="Remove event">×</button>' +
     '</div>';
 }
@@ -2221,11 +2692,16 @@ function renderCalendar() {
       : '<div class="event-empty">Nothing scheduled this day</div>';
   }
 
+  // Anchor "Upcoming" to the day being viewed, not always to today. Selecting a
+  // future date should not leave earlier events labelled as upcoming; selecting
+  // a past date still starts from now so the list never begins in the past.
   const now = Date.now();
-  const horizon = startOfDay(new Date()).getTime() + 30 * DAY_MS;
+  const selectedStart = new Date(calendarState.selected + 'T00:00:00').getTime();
+  const anchor = Number.isFinite(selectedStart) ? Math.max(now, selectedStart) : now;
+  const horizon = startOfDay(new Date(anchor)).getTime() + 30 * DAY_MS;
   const upcoming = items.filter((item) => {
     const at = new Date(item.at).getTime();
-    return at >= now && at <= horizon;
+    return at >= anchor && at <= horizon;
   });
 
   const upcomingHost = $('#calUpcoming');
@@ -2342,8 +2818,13 @@ function removeEvent(eventId) {
   toast('Event removed');
 }
 
-function removeEventConfirmed(eventId) {
-  if (!confirm('Remove this event? It can be re-added later.')) return;
+async function removeEventConfirmed(eventId) {
+  const ok = await confirmAction({
+    title: 'Remove this event?',
+    message: 'It can be re-added later.',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
   removeEvent(eventId);
 }
 
@@ -3064,6 +3545,7 @@ function closeModal(modal) {
   if (!modal) return;
   modal.hidden = true;
   if (modal.id === 'addJobModal') resolveQuestionsResponse('closed');
+  if (modal.id === 'confirmModal') settleConfirm(false);
   if (!$$('.modal').some((item) => !item.hidden)) {
     document.body.classList.remove('modal-open');
   }
@@ -3073,6 +3555,46 @@ function closeModal(modal) {
 function closeTopModal() {
   const open = $$('.modal').filter((modal) => !modal.hidden);
   if (open.length) closeModal(open[open.length - 1]);
+}
+
+// ---------------------------------------------------------------- Confirm card
+
+// Destructive actions use one shared card instead of the browser's native
+// confirm(). Cancel, Escape, and backdrop clicks all resolve false; the accept
+// button resolves true. Cancel is focused first so Enter never deletes by accident.
+let confirmResolver = null;
+
+function settleConfirm(result) {
+  if (!confirmResolver) return;
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  resolve(result);
+}
+
+function confirmAction(options = {}) {
+  const modal = $('#confirmModal');
+  if (!modal) return Promise.resolve(window.confirm(options.message || 'Are you sure?'));
+  settleConfirm(false);
+
+  const danger = options.tone !== 'neutral';
+  const panel = modal.querySelector('.modal-panel');
+  if (panel) panel.classList.toggle('is-danger', danger);
+  const eyebrow = $('#confirmEyebrow');
+  if (eyebrow) eyebrow.textContent = danger ? 'Destructive action' : 'Please confirm';
+  const title = $('#confirmTitle');
+  if (title) title.textContent = options.title || 'Are you sure?';
+  const message = $('#confirmMessage');
+  if (message) message.textContent = options.message || '';
+  const cancel = $('#confirmCancelBtn');
+  if (cancel) cancel.textContent = options.cancelLabel || 'Cancel';
+  const accept = $('#confirmAcceptBtn');
+  if (accept) {
+    accept.textContent = options.confirmLabel || (danger ? 'Delete' : 'Confirm');
+    accept.className = 'btn ' + (danger ? 'danger' : 'primary');
+  }
+
+  openModal(modal);
+  return new Promise((resolve) => { confirmResolver = resolve; });
 }
 
 // ---------------------------------------------------------------- Add job
@@ -5214,11 +5736,16 @@ function saveCurrentNotes() {
   toast('Notes saved');
 }
 
-function deleteApplication(id) {
+async function deleteApplication(id) {
   const application = state.applications.find((app) => String(app.id) === String(id));
   if (!application) return;
   const label = application.company + ' — ' + application.position;
-  if (!confirm('Delete ' + label + '? This cannot be undone.')) return;
+  const ok = await confirmAction({
+    title: 'Delete application?',
+    message: 'Delete ' + label + '? This cannot be undone.',
+    confirmLabel: 'Delete'
+  });
+  if (!ok) return;
 
   const wasOpen = String(currentDetailId) === String(id);
   state.applications = state.applications.filter((app) => String(app.id) !== String(id));
@@ -5438,7 +5965,39 @@ function renderAccount() {
   renderTogetherBadge();
 }
 
+function renderDailyPortalSetting() {
+  const select = $('#dailyPortalSelect');
+  if (!select) return;
+
+  const current = normalizePortalChoice(state.profile.dailyPortal);
+  const auto = resolveDailyPortal('auto', state.profile, dailyReadKeywords());
+
+  select.innerHTML =
+    '<option value="auto">Auto — from my profile</option>' +
+    DAILY_PORTALS.map((portal) =>
+      '<option value="' + escapeHtml(portal.id) + '">' + escapeHtml(portal.label) + '</option>'
+    ).join('') +
+    '<option value="general">General Wikipedia feed</option>';
+  select.value = current;
+
+  const help = $('#dailyPortalHelp');
+  if (help) {
+    if (current === 'auto') {
+      help.textContent = auto ? 'Currently: ' + auto.label + '.' : 'No strong match yet, so the general feed is used.';
+    } else if (current === 'general') {
+      help.textContent = 'Finishes the day with Wikipedia’s featured and most-read articles.';
+    } else {
+      const portal = DAILY_PORTALS.find((item) => item.id === current);
+      help.textContent = portal
+        ? 'Rotates through recognized articles from the ' + portal.label + ' portal.' :
+        '';
+    }
+  }
+}
+
 function renderSettings() {
+  renderDailyPortalSetting();
+
   const keyInput = $('#keyInput');
   if (keyInput) keyInput.value = state.geminiKey;
 
@@ -5460,8 +6019,10 @@ function renderSettings() {
 
   renderNotifyStatus();
 
-  const dashToggle = $('#dashInsightsToggle');
-  if (dashToggle) dashToggle.checked = dashInsights;
+  const dashActivityToggle = $('#dashActivityToggle');
+  if (dashActivityToggle) dashActivityToggle.checked = dashActivity;
+  const dashStatusToggle = $('#dashStatusToggle');
+  if (dashStatusToggle) dashStatusToggle.checked = dashStatus;
 
   renderAccount();
 }
@@ -5478,12 +6039,17 @@ function saveKey() {
   toast('Gemini key saved');
 }
 
-function clearKey() {
+async function clearKey() {
   if (!state.geminiKey) {
     toast('No key saved');
     return;
   }
-  if (!confirm('Remove the saved Gemini key?')) return;
+  const ok = await confirmAction({
+    title: 'Remove the Gemini key?',
+    message: 'knomad will stop using this key for AI tailoring on this device.',
+    confirmLabel: 'Remove key'
+  });
+  if (!ok) return;
   state.geminiKey = '';
   localStorage.removeItem(STORE.key);
   workingModel = null;
@@ -5510,12 +6076,15 @@ function exportData() {
   toast('Backup downloaded');
 }
 
-function resetAll() {
-  const cloudMessage = cloudReady()
-    ? 'Erase your profile, resume, applications, and key from this browser and your cloud account?'
-    : 'Erase your profile, resume, applications, and key from this browser?';
-  if (!confirm(cloudMessage)) return;
-  if (!confirm('Last check: this cannot be undone. Erase everything?')) return;
+async function resetAll() {
+  const ok = await confirmAction({
+    title: 'Erase all data?',
+    message: cloudReady()
+      ? 'This removes your profile, resume, applications, and Gemini key from this browser and your cloud account. It cannot be undone.'
+      : 'This removes your profile, resume, applications, and Gemini key from this browser. It cannot be undone.',
+    confirmLabel: 'Erase everything'
+  });
+  if (!ok) return;
 
   const previousApplications = state.applications.slice();
 
@@ -5710,10 +6279,8 @@ function renderFriends() {
 
   const signedOut = $('#friendsSignedOut');
   const signedInPanel = $('#friendsSignedIn');
-  const actions = $('#friendsHeadActions');
   if (signedOut) signedOut.hidden = !configured || signedIn;
   if (signedInPanel) signedInPanel.hidden = !signedIn;
-  if (actions) actions.hidden = !signedIn;
 
   if (!configured && signedOut) {
     const copy = signedOut.querySelector('p');
@@ -5747,13 +6314,41 @@ function renderFriends() {
   renderSharedTabs();
 }
 
+function userOnline(user) {
+  return Boolean(user && user.online);
+}
+
+// A small dot after the name, plus a ring on the avatar. Missing or stale
+// presence data reads as offline, never as a guess.
+function onlineDot(user) {
+  if (!userOnline(user)) return '';
+  return '<span class="online-dot" title="Online now" aria-label="Online now"></span>';
+}
+
+function onlineById(id) {
+  return Boolean(id && userOnline(state.space.people[id]));
+}
+
+function onlineDotById(id) {
+  return id ? onlineDot(state.space.people[id]) : '';
+}
+
 function socialAvatar(user) {
   const name = (user && (user.name || user.email)) || '?';
-  return '<span class="social-avatar" aria-hidden="true">' + escapeHtml(initials(name)) + '</span>';
+  return '<span class="social-avatar' + (userOnline(user) ? ' is-online' : '') +
+    '" aria-hidden="true">' + escapeHtml(initials(name)) + '</span>';
 }
 
 function socialPersonName(user) {
   return (user && (user.name || user.email)) || 'Knomad user';
+}
+
+function socialNameHtml(user) {
+  return escapeHtml(socialPersonName(user)) + onlineDot(user);
+}
+
+function personNameHtml(id) {
+  return escapeHtml(personName(id)) + onlineDotById(id);
 }
 
 function renderFriendRequests() {
@@ -5778,7 +6373,7 @@ function renderFriendRequests() {
       '<div class="social-person">' +
         socialAvatar(request.from) +
         '<div class="social-person-main">' +
-          '<strong>' + escapeHtml(socialPersonName(request.from)) + '</strong>' +
+          '<strong>' + socialNameHtml(request.from) + '</strong>' +
           '<span>Wants to be kniggurs</span>' +
         '</div>' +
         '<div class="social-person-actions">' +
@@ -5791,7 +6386,7 @@ function renderFriendRequests() {
       '<div class="social-person">' +
         socialAvatar(request.to) +
         '<div class="social-person-main">' +
-          '<strong>' + escapeHtml(socialPersonName(request.to)) + '</strong>' +
+          '<strong>' + socialNameHtml(request.to) + '</strong>' +
           '<span>Request sent · waiting for them</span>' +
         '</div>' +
         '<div class="social-person-actions">' +
@@ -5820,7 +6415,7 @@ function renderFriendList() {
     return '<div class="social-person">' +
       socialAvatar(friend) +
       '<div class="social-person-main">' +
-        '<strong>' + escapeHtml(socialPersonName(friend)) + '</strong>' +
+        '<strong>' + socialNameHtml(friend) + '</strong>' +
         '<span title="' + escapeHtml(friend.email || '') + '">' + escapeHtml(detail) + '</span>' +
       '</div>' +
       '<div class="social-person-actions">' +
@@ -5862,10 +6457,10 @@ function shareThreadHtml(share, friend) {
   const rows = messages.length
     ? messages.map((message) => {
         const unread = !message.mine && !message.readAt;
-        const author = message.mine ? 'You' : socialPersonName(friend);
+        const author = message.mine ? 'You' : socialNameHtml(friend);
         return '<div class="share-message' + (message.mine ? ' mine' : '') + (unread ? ' unread' : '') + '">' +
           '<div class="share-message-meta">' +
-            '<strong>' + escapeHtml(author) + '</strong>' +
+            '<strong>' + author + '</strong>' +
             '<span>' + escapeHtml(relativeDay(message.createdAt)) + '</span>' +
             (unread ? '<span class="unread-dot" aria-hidden="true"></span>' : '') +
           '</div>' +
@@ -5937,7 +6532,6 @@ function renderSharedInbox() {
 
   host.innerHTML = inbox.map((share) => {
     const unread = !share.readAt;
-    const from = socialPersonName(share.from);
     const note = share.note
       ? '<p class="share-note">' + escapeHtml(share.note) + '</p>'
       : '';
@@ -5955,7 +6549,7 @@ function renderSharedInbox() {
           '<p class="share-role">' + shareRoleHtml(share) + '</p>' +
           '<p class="share-meta">' +
             (unread ? '<span class="unread-dot" aria-hidden="true"></span>' : '') +
-            '<span>From ' + escapeHtml(from) + '</span>' +
+            '<span>From ' + socialNameHtml(share.from) + '</span>' +
             '<span>·</span>' +
             '<span>' + escapeHtml(relativeDay(share.createdAt)) + '</span>' +
             (share.status === 'saved' ? '<span>· Saved</span>' : '') +
@@ -5986,7 +6580,6 @@ function renderSentShares() {
   }
 
   host.innerHTML = sent.map((share) => {
-    const to = socialPersonName(share.to);
     const note = share.note
       ? '<p class="share-note">' + escapeHtml(share.note) + '</p>'
       : '';
@@ -5996,7 +6589,7 @@ function renderSentShares() {
         '<div class="share-body">' +
           '<p class="share-role">' + shareRoleHtml(share) + '</p>' +
           '<p class="share-meta">' +
-            '<span>To ' + escapeHtml(to) + '</span>' +
+            '<span>To ' + socialNameHtml(share.to) + '</span>' +
             '<span>·</span>' +
             '<span>' + escapeHtml(relativeDay(share.createdAt)) + '</span>' +
             (share.status === 'dismissed' ? '<span>· Dismissed</span>' : '') +
@@ -6062,7 +6655,12 @@ async function cancelFriendRequest(requestId) {
 async function removeFriend(friendId) {
   const friend = (state.social.friends || []).find((entry) => entry.id === friendId);
   const name = friend ? socialPersonName(friend) : 'this kniggur';
-  if (!confirm('Remove ' + name + ' from your kniggurs? They will no longer be able to send you jobs.')) return;
+  const ok = await confirmAction({
+    title: 'Remove kniggur?',
+    message: 'Remove ' + name + ' from your kniggurs? They will no longer be able to send you jobs.',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
 
   try {
     await api('/friends/' + encodeURIComponent(friendId), { method: 'DELETE' });
@@ -6117,6 +6715,12 @@ function trackSharedJob(shareId) {
 }
 
 async function dismissShare(shareId) {
+  const ok = await confirmAction({
+    title: 'Dismiss this job?',
+    message: 'It will be hidden from your inbox. The sender keeps their copy.',
+    confirmLabel: 'Dismiss'
+  });
+  if (!ok) return;
   try {
     await api('/shares/' + encodeURIComponent(shareId), { method: 'DELETE' });
     state.social.inbox = (state.social.inbox || []).filter((entry) => entry.id !== shareId);
@@ -6131,6 +6735,12 @@ async function dismissShare(shareId) {
 }
 
 async function deleteSentShare(shareId) {
+  const ok = await confirmAction({
+    title: 'Remove this shared job?',
+    message: 'This removes the share and cannot be undone.',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
   try {
     await api('/shares/' + encodeURIComponent(shareId), { method: 'DELETE' });
     state.social.sent = (state.social.sent || []).filter((entry) => entry.id !== shareId);
@@ -6369,7 +6979,7 @@ function shareCurrentApplication() {
 
 // ---------------------------------------------------------------- Together
 
-const TOGETHER_TABS = ['todos', 'kniggurs', 'projects', 'learning', 'shelf', 'crm'];
+const TOGETHER_TABS = ['kniggurs', 'todos', 'projects', 'learning', 'shelf', 'crm'];
 const SHELF_CATEGORY_SUGGESTIONS = [
   'Fiction', 'Business', 'Design', 'Science', 'Biography',
   'Self-development', 'History', 'Poetry'
@@ -6379,7 +6989,7 @@ const TOGETHER_PLACEHOLDER = {
 };
 
 let togetherScope = 'me';
-let togetherTab = 'todos';
+let togetherTab = 'kniggurs';
 let togetherListId = 'all';
 let shelfFilter = 'all';
 let shelfCategory = 'all';
@@ -6388,6 +6998,9 @@ let crmStageFilter = 'all';
 let crmSearch = '';
 let contactModalId = null;
 let calendarScope = localStorage.getItem(STORE.calScope) || 'all';
+const UPCOMING_WINDOWS = { '1d': 1, '7d': 7, '30d': 30 };
+let upcomingWindow = localStorage.getItem(STORE.upcomingWindow);
+if (!UPCOMING_WINDOWS[upcomingWindow]) upcomingWindow = '7d';
 let spaceLoading = false;
 let spaceGeneration = 0;
 
@@ -6410,7 +7023,7 @@ function resetSpace() {
   spaceGeneration += 1;
   spaceLoading = false;
   togetherScope = 'me';
-  togetherTab = 'todos';
+  togetherTab = 'kniggurs';
   togetherListId = 'all';
   shelfFilter = 'all';
   shelfCategory = 'all';
@@ -6722,9 +7335,39 @@ function setTogetherScope(scope) {
   renderTogether();
 }
 
+function setScopeMenuOpen(open) {
+  const button = $('#togetherScopeBtn');
+  const menu = $('#togetherScopeMenu');
+  if (!button || !menu) return;
+  menu.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+}
+
 function setTogetherTab(tab) {
-  togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'todos';
+  togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'kniggurs';
   renderTogetherTabs();
+}
+
+// Add forms stay collapsed until asked for, so each tab opens on its records.
+function toggleAddPanel(button) {
+  const panel = document.getElementById(button.dataset.addToggle);
+  if (!panel) return;
+
+  const open = panel.hidden;
+  panel.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  const label = button.querySelector('[data-add-label]');
+  if (label) label.textContent = open ? 'Close' : 'Add';
+
+  const grid = button.closest('.together-grid');
+  if (grid && grid.querySelector('.add-card')) {
+    grid.classList.toggle('adds-closed', !grid.querySelector('.add-card:not([hidden])'));
+  }
+
+  if (open) {
+    const field = panel.querySelector('input:not([type="hidden"]), textarea, select');
+    if (field) setTimeout(() => field.focus(), 40);
+  }
 }
 function renderTogether() {
   const signedOut = $('#togetherSignedOut');
@@ -6786,16 +7429,27 @@ function renderTogether() {
 }
 
 function renderTogetherScope() {
-  const select = $('#togetherScope');
-  if (!select) return;
-
-  select.innerHTML = '<option value="me">Just me</option>' +
-    state.space.circles.map((circle) => (
-      '<option value="' + escapeHtml(circle.id) + '">' + escapeHtml(circle.name) + '</option>'
-    )).join('');
+  const menu = $('#togetherScopeMenu');
+  const label = $('#togetherScopeLabel');
+  if (!menu || !label) return;
 
   if (togetherScope !== 'me' && !circleById(togetherScope)) togetherScope = 'me';
-  select.value = togetherScope;
+
+  const options = [{ value: 'me', name: 'Just me' }].concat(
+    state.space.circles.map((circle) => ({ value: circle.id, name: circle.name }))
+  );
+
+  if (menu.hidden) {
+    menu.innerHTML = options.map((option) => (
+      '<button class="scope-option" type="button" role="option" data-scope-value="' + escapeHtml(option.value) + '" aria-selected="' + String(option.value === togetherScope) + '">' +
+        '<span class="scope-option-name">' + escapeHtml(option.name) + '</span>' +
+        '<svg class="icon scope-option-check" aria-hidden="true"><use href="#icon-check"/></svg>' +
+      '</button>'
+    )).join('');
+  }
+
+  const current = options.find((option) => option.value === togetherScope) || options[0];
+  label.textContent = current.name;
 }
 
 function renderTogetherTabs() {
@@ -6868,9 +7522,10 @@ function renderCircleCard() {
       const canRemove = self ? !isOwner : isOwner;
       const detail = member.role === 'owner' ? 'Owner' : (self ? 'You' : 'Member');
       return '<div class="social-person">' +
-        '<span class="social-avatar" aria-hidden="true">' + escapeHtml(initials(personName(member.userId))) + '</span>' +
+        '<span class="social-avatar' + (onlineById(member.userId) ? ' is-online' : '') + '" aria-hidden="true">' +
+          escapeHtml(initials(personName(member.userId))) + '</span>' +
         '<div class="social-person-main">' +
-          '<strong>' + escapeHtml(personName(member.userId)) + '</strong>' +
+          '<strong>' + personNameHtml(member.userId) + '</strong>' +
           '<span>' + escapeHtml(detail) + '</span>' +
         '</div>' +
         (canRemove
@@ -7068,7 +7723,7 @@ function renderTodos() {
           '</label>' +
           assigneeOptions +
           (task.assigneeId && !members.length
-            ? '<span class="task-assignee-chip">' + escapeHtml(personName(task.assigneeId)) + '</span>'
+            ? '<span class="task-assignee-chip">' + personNameHtml(task.assigneeId) + '</span>'
             : '') +
           (task.circleId ? '<span class="task-circle-chip">' + escapeHtml(circleName(task.circleId)) + '</span>' : '') +
         '</div>' +
@@ -7288,7 +7943,7 @@ function renderProjectModal() {
               (done ? '✓' : '') +
             '</button>' +
             '<span class="project-task-title">' + escapeHtml(task.title) + '</span>' +
-            (task.assigneeId ? '<span class="task-assignee-chip">' + escapeHtml(personName(task.assigneeId)) + '</span>' : '') +
+            (task.assigneeId ? '<span class="task-assignee-chip">' + personNameHtml(task.assigneeId) + '</span>' : '') +
             (task.dueAt ? '<span class="project-milestone-due">' + escapeHtml(formatDay(task.dueAt)) + '</span>' : '') +
           '</div>';
         }).join('')
@@ -7362,7 +8017,12 @@ async function saveProject(event) {
 async function deleteProject(id) {
   const project = findProject(id);
   if (!project) return;
-  if (!confirm('Delete "' + project.name + '"? Its tasks stay in To-dos, without the project.')) return;
+  const ok = await confirmAction({
+    title: 'Delete project?',
+    message: 'Delete "' + project.name + '"? Its tasks stay in To-dos, without the project.',
+    confirmLabel: 'Delete project'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/projects/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -7610,7 +8270,9 @@ function renderShelfCategories() {
           : '') +
         '<form id="newShelfCategoryForm" class="friend-add-row" autocomplete="off">' +
           '<input id="shelfCategoryName" maxlength="40" placeholder="New category" aria-label="New category">' +
-          '<button class="btn ghost small" type="submit">Add</button>' +
+          '<button class="btn ghost small" type="submit">' +
+            '<svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>Add' +
+          '</button>' +
         '</form>'
       : '');
 }
@@ -7648,7 +8310,12 @@ async function suggestShelfCategory(name) {
 async function deleteShelfCategory(id) {
   const category = (state.space.shelfCategories || []).find((entry) => entry.id === id);
   if (!category) return;
-  if (!confirm('Remove the category "' + category.name + '"? Existing books keep the label.')) return;
+  const ok = await confirmAction({
+    title: 'Remove category?',
+    message: 'Remove the category "' + category.name + '"? Existing books keep the label.',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/shelf-categories/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -7867,7 +8534,7 @@ function renderContactTimeline(contact) {
     const canDelete = canDeleteContactNote(contact, note);
     return '<div class="contact-note">' +
       '<div class="contact-note-head">' +
-        '<strong>' + escapeHtml(personName(note.authorId)) + '</strong>' +
+        '<strong>' + personNameHtml(note.authorId) + '</strong>' +
         '<span>' + escapeHtml(formatDay(note.happenedOn)) + '</span>' +
         (canDelete
           ? '<button class="contact-note-del" type="button" data-note-delete="' + escapeHtml(note.id) +
@@ -7974,7 +8641,12 @@ async function saveContact(event) {
 async function deleteContact(id) {
   const contact = findContact(id);
   if (!contact) return;
-  if (!confirm('Delete ' + contact.name + '? The contact and its notes will be hidden.')) return;
+  const ok = await confirmAction({
+    title: 'Delete contact?',
+    message: 'Delete ' + contact.name + '? The contact and its notes will be hidden.',
+    confirmLabel: 'Delete contact'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/contacts/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -8037,6 +8709,12 @@ async function addContactNote(event) {
 }
 
 async function deleteContactNote(noteId) {
+  const ok = await confirmAction({
+    title: 'Remove this note?',
+    message: 'The interaction will be removed from the timeline.',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
   const data = await spaceRequest(
     '/contacts/' + encodeURIComponent(contactModalId) + '/notes/' + encodeURIComponent(noteId),
     { method: 'DELETE' }
@@ -8210,7 +8888,12 @@ async function saveBookRating(id, value) {
 async function deleteBook(id) {
   const book = (state.space.books || []).find((entry) => entry.id === id);
   if (!book) return;
-  if (!confirm('Remove "' + book.title + '" from the shelf?')) return;
+  const ok = await confirmAction({
+    title: 'Remove book?',
+    message: 'Remove "' + book.title + '" from the shelf?',
+    confirmLabel: 'Remove'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/books/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -8376,7 +9059,12 @@ async function saveTaskProject(id, value) {
 async function deleteSpaceTask(id) {
   const task = findSpaceTask(id);
   if (!task) return;
-  if (!confirm('Delete "' + task.title + '"?')) return;
+  const ok = await confirmAction({
+    title: 'Delete task?',
+    message: 'Delete "' + task.title + '"?',
+    confirmLabel: 'Delete task'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -8413,7 +9101,12 @@ async function addSpaceList(event) {
 async function deleteSpaceList(id) {
   const list = findSpaceList(id);
   if (!list) return;
-  if (!confirm('Delete the list "' + list.name + '"? Its tasks stay, without a list.')) return;
+  const ok = await confirmAction({
+    title: 'Delete list?',
+    message: 'Delete the list "' + list.name + '"? Its tasks stay, without a list.',
+    confirmLabel: 'Delete list'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/task-lists/' + encodeURIComponent(id), {
     method: 'DELETE',
@@ -8487,8 +9180,14 @@ async function addCircleMemberFromForm(event) {
 async function removeCircleMember(circleId, userId) {
   const me = state.cloud.user && state.cloud.user.id;
   const self = userId === me;
-  const label = self ? 'Leave this circle?' : 'Remove ' + personName(userId) + ' from this circle?';
-  if (!confirm(label)) return;
+  const ok = await confirmAction({
+    title: self ? 'Leave this circle?' : 'Remove member?',
+    message: self
+      ? 'You will lose access to its shared lists and tasks.'
+      : 'Remove ' + personName(userId) + ' from this circle?',
+    confirmLabel: self ? 'Leave' : 'Remove'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest(
     '/circles/' + encodeURIComponent(circleId) + '/members/' + encodeURIComponent(userId),
@@ -8508,7 +9207,12 @@ async function removeCircleMember(circleId, userId) {
 async function deleteCircle(circleId) {
   const circle = circleById(circleId);
   if (!circle) return;
-  if (!confirm('Archive "' + circle.name + '"? Its lists and tasks go back to their creators.')) return;
+  const ok = await confirmAction({
+    title: 'Archive circle?',
+    message: 'Archive "' + circle.name + '"? Its lists and tasks go back to their creators.',
+    confirmLabel: 'Archive'
+  });
+  if (!ok) return;
 
   const data = await spaceRequest('/circles/' + encodeURIComponent(circleId), { method: 'DELETE' });
   if (!data) return;
@@ -8625,6 +9329,19 @@ function calendarSourceLabel(item) {
   return eventKindLabel(item.event);
 }
 
+// Same label as calendarSourceLabel, but marked up so a task assignee can carry
+// a live presence dot. Google Calendar still uses the plain-text label.
+function calendarSourceHtml(item) {
+  if (item.source === 'task') {
+    const where = item.circleId ? circleName(item.circleId) : 'My task';
+    const assignee = item.task && item.task.assigneeId
+      ? ' · ' + personNameHtml(item.task.assigneeId)
+      : '';
+    return escapeHtml(where) + assignee;
+  }
+  return escapeHtml(calendarSourceLabel(item));
+}
+
 function scheduleWhen(item, options = {}) {
   if (item.allDay) {
     const day = options.withDay || options.full ? relativeDay(item.at) : '';
@@ -8638,7 +9355,7 @@ function scheduleWhen(item, options = {}) {
 
 function scheduleRowHtml(item, options = {}) {
   const past = new Date(item.at).getTime() < Date.now() ? ' is-past' : '';
-  const sub = scheduleWhen(item, options) + ' · ' + calendarSourceLabel(item);
+  const subHtml = escapeHtml(scheduleWhen(item, options)) + ' · ' + calendarSourceHtml(item);
   const kindClass = item.source === 'task' ? ' task'
     : item.source === 'crm' ? ' crm'
     : item.source === 'project' ? ' project'
@@ -8647,23 +9364,23 @@ function scheduleRowHtml(item, options = {}) {
     ? '<button class="event-row-main event-row-button" type="button" data-cal-task-open="' +
         escapeHtml(item.sourceId) + '">' +
         '<strong>' + escapeHtml(item.title) + '</strong>' +
-        '<span>' + escapeHtml(sub) + '</span>' +
+        '<span>' + subHtml + '</span>' +
       '</button>'
     : item.source === 'crm'
       ? '<button class="event-row-main event-row-button" type="button" data-cal-contact-open="' +
           escapeHtml(item.sourceId) + '">' +
           '<strong>' + escapeHtml(item.title) + '</strong>' +
-          '<span>' + escapeHtml(sub) + '</span>' +
+          '<span>' + subHtml + '</span>' +
         '</button>'
       : item.source === 'project'
         ? '<button class="event-row-main event-row-button" type="button" data-cal-project-open="' +
             escapeHtml(item.sourceId) + '">' +
             '<strong>' + escapeHtml(item.title) + '</strong>' +
-            '<span>' + escapeHtml(sub) + '</span>' +
+            '<span>' + subHtml + '</span>' +
           '</button>'
         : '<span class="event-row-main">' +
             '<strong>' + escapeHtml(item.title) + '</strong>' +
-            '<span>' + escapeHtml(sub) + '</span>' +
+            '<span>' + subHtml + '</span>' +
           '</span>';
 
   const action = item.source === 'task'
@@ -8680,9 +9397,18 @@ function scheduleRowHtml(item, options = {}) {
         : '<button class="event-del" type="button" data-event-del="' + escapeHtml(item.event.id) +
           '" title="Remove event" aria-label="Remove event">×</button>';
 
+  const gcal = googleCalendarLink({
+    title: item.title,
+    at: item.at,
+    allDay: item.allDay,
+    details: calendarSourceLabel(item) +
+      (item.source === 'application' && item.app && item.app.company ? ' · ' + item.app.company : '')
+  });
+
   return '<div class="event-row' + past + (item.done ? ' is-done' : '') + '">' +
     '<span class="event-kind' + kindClass + '"></span>' +
     main +
+    gcal +
     action +
   '</div>';
 }
@@ -8691,6 +9417,30 @@ function scheduleRowHtml(item, options = {}) {
 
 function bindEvents() {
   document.addEventListener('click', (event) => {
+    const scopeTrigger = event.target.closest('#togetherScopeBtn');
+    if (scopeTrigger) {
+      event.preventDefault();
+      const menu = $('#togetherScopeMenu');
+      if (menu && menu.hidden) renderTogetherScope();
+      setScopeMenuOpen(Boolean(menu && menu.hidden));
+      return;
+    }
+
+    const scopeOption = event.target.closest('[data-scope-value]');
+    if (scopeOption) {
+      event.preventDefault();
+      setScopeMenuOpen(false);
+      setTogetherScope(scopeOption.dataset.scopeValue);
+      const button = $('#togetherScopeBtn');
+      if (button) button.focus();
+      return;
+    }
+
+    const openScopeMenu = $('#togetherScopeMenu');
+    if (openScopeMenu && !openScopeMenu.hidden && !event.target.closest('#togetherScopePicker')) {
+      setScopeMenuOpen(false);
+    }
+
     const railButton = event.target.closest('.rail-btn');
     if (railButton && railButton.dataset.page) {
       event.preventDefault();
@@ -8705,11 +9455,18 @@ function bindEvents() {
       return;
     }
 
+    const addToggle = event.target.closest('[data-add-toggle]');
+    if (addToggle) {
+      event.preventDefault();
+      toggleAddPanel(addToggle);
+      return;
+    }
+
     const togetherOpenTab = event.target.closest('[data-together-open-tab]');
     if (togetherOpenTab) {
       event.preventDefault();
       const tab = togetherOpenTab.dataset.togetherOpenTab;
-      togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'todos';
+      togetherTab = TOGETHER_TABS.includes(tab) ? tab : 'kniggurs';
       showPage('together');
       return;
     }
@@ -8970,6 +9727,16 @@ function bindEvents() {
       return;
     }
 
+    const retryDaily = event.target.closest('[data-retry-daily]');
+    if (retryDaily) {
+      event.preventDefault();
+      dailyReadState.status = 'idle';
+      dailyReadState.data = null;
+      dailyReadState.error = '';
+      renderDailyRead();
+      return;
+    }
+
     const showAllSearch = event.target.closest('[data-show-all-search]');
     if (showAllSearch) {
       event.preventDefault();
@@ -8977,6 +9744,13 @@ function bindEvents() {
       const strict = $('#jobSearchStrict');
       if (strict) strict.checked = false;
       renderSearchResults();
+      return;
+    }
+
+    const loadAiMore = event.target.closest('[data-load-ai-more]');
+    if (loadAiMore) {
+      event.preventDefault();
+      loadMoreAiTraining();
       return;
     }
 
@@ -9126,6 +9900,37 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', (event) => {
+    const scopeMenu = $('#togetherScopeMenu');
+    if (scopeMenu) {
+      if (event.key === 'Escape' && !scopeMenu.hidden) {
+        event.preventDefault();
+        setScopeMenuOpen(false);
+        const button = $('#togetherScopeBtn');
+        if (button) button.focus();
+        return;
+      }
+
+      const scopeFocused = event.target.closest && (event.target.closest('#togetherScopeBtn') || event.target.closest('#togetherScopeMenu'));
+      if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && scopeFocused) {
+        event.preventDefault();
+        if (scopeMenu.hidden) {
+          renderTogetherScope();
+          setScopeMenuOpen(true);
+        }
+        const options = Array.from(scopeMenu.querySelectorAll('.scope-option'));
+        if (!options.length) return;
+        const index = options.indexOf(document.activeElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        const next = index === -1
+          ? (step === 1 ? 0 : options.length - 1)
+          : (index + step + options.length) % options.length;
+        options[next].focus();
+        return;
+      }
+
+      if (event.key === 'Tab' && !scopeMenu.hidden) setScopeMenuOpen(false);
+    }
+
     if (event.key === 'Escape') closeTopModal();
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       const input = event.target.closest && event.target.closest('[data-share-reply-input]');
@@ -9249,11 +10054,6 @@ function bindEvents() {
     const target = event.target;
     if (!target || !target.closest) return;
 
-    if (target.closest('#togetherScope')) {
-      setTogetherScope(target.value);
-      return;
-    }
-
     if (target.closest('#contactSearch')) {
       crmSearch = target.value;
       renderContactList();
@@ -9263,6 +10063,13 @@ function bindEvents() {
     if (target.closest('#contactStageFilter')) {
       crmStageFilter = target.value;
       renderContactList();
+      return;
+    }
+
+    if (target.closest('#upcomingWindow')) {
+      upcomingWindow = UPCOMING_WINDOWS[target.value] ? target.value : '7d';
+      localStorage.setItem(STORE.upcomingWindow, upcomingWindow);
+      renderUpcoming();
       return;
     }
 
@@ -9335,6 +10142,18 @@ function bindEvents() {
   const profileCancelBtn = $('#profileCancelBtn');
   if (profileCancelBtn) profileCancelBtn.addEventListener('click', () => cancelProfileEdit());
 
+  const dailyPortalSelect = $('#dailyPortalSelect');
+  if (dailyPortalSelect) {
+    dailyPortalSelect.addEventListener('change', () => {
+      state.profile.dailyPortal = normalizePortalChoice(dailyPortalSelect.value);
+      saveProfile();
+      dailyReadState.key = '';
+      if (currentPage === 'dashboard') renderDailyRead();
+      renderDailyPortalSetting();
+      toast('Daily article portal updated');
+    });
+  }
+
   const profileView = $('#profileView');
   if (profileView) {
     profileView.addEventListener('click', (event) => {
@@ -9398,9 +10217,14 @@ function bindEvents() {
   if (fillBtn) fillBtn.addEventListener('click', fillProfileFromResume);
 
   const clearBtn = $('#resumeClearBtn');
-  if (clearBtn) clearBtn.addEventListener('click', () => {
+  if (clearBtn) clearBtn.addEventListener('click', async () => {
     if (state.profile.resumeText) {
-      if (!confirm('Clear the pasted resume? This will not delete the original file.')) return;
+      const ok = await confirmAction({
+        title: 'Clear the pasted resume?',
+        message: 'This will not delete the original file.',
+        confirmLabel: 'Clear'
+      });
+      if (!ok) return;
     }
     clearResume();
   });
@@ -9497,13 +10321,39 @@ function bindEvents() {
   const notifyBtn = $('#notifyBtn');
   if (notifyBtn) notifyBtn.addEventListener('click', enableNotifications);
 
-  const dashInsightsToggle = $('#dashInsightsToggle');
-  if (dashInsightsToggle) {
-    dashInsightsToggle.addEventListener('change', () => {
-      dashInsights = dashInsightsToggle.checked;
-      localStorage.setItem(STORE.dashInsights, dashInsights ? 'on' : 'off');
+  const dashActivityToggle = $('#dashActivityToggle');
+  if (dashActivityToggle) {
+    dashActivityToggle.addEventListener('change', () => {
+      dashActivity = dashActivityToggle.checked;
+      saveDashChartPref(STORE.dashActivity, dashActivity);
       if (currentPage === 'dashboard') renderDashboard();
-      toast(dashInsights ? 'Dashboard insights shown' : 'Dashboard insights hidden');
+      toast(dashActivity ? 'Activity chart shown' : 'Activity chart hidden');
+    });
+  }
+
+  const dashStatusToggle = $('#dashStatusToggle');
+  if (dashStatusToggle) {
+    dashStatusToggle.addEventListener('change', () => {
+      dashStatus = dashStatusToggle.checked;
+      saveDashChartPref(STORE.dashStatus, dashStatus);
+      if (currentPage === 'dashboard') renderDashboard();
+      toast(dashStatus ? 'Status breakdown shown' : 'Status breakdown hidden');
+    });
+  }
+
+  const confirmCancelBtn = $('#confirmCancelBtn');
+  if (confirmCancelBtn) {
+    confirmCancelBtn.addEventListener('click', () => {
+      settleConfirm(false);
+      closeModal($('#confirmModal'));
+    });
+  }
+
+  const confirmAcceptBtn = $('#confirmAcceptBtn');
+  if (confirmAcceptBtn) {
+    confirmAcceptBtn.addEventListener('click', () => {
+      settleConfirm(true);
+      closeModal($('#confirmModal'));
     });
   }
 

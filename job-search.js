@@ -1,6 +1,6 @@
 /* knomad job search — public job APIs + deterministic filtering.
  *
- * There is no model in this file. Listings come from three public, key-less
+ * There is no model in this file. Listings come from four public, key-less
  * job APIs. The role query is matched against titles/tags with token rules,
  * and "open to Nigerians" is decided by parsing the location string each
  * provider already publishes (e.g. "Worldwide", "Africa", "USA only").
@@ -149,9 +149,13 @@ const DESCRIPTION_HINT_PATTERNS = [
 
 const RESPONSE_CACHE = new Map();
 const CACHE_MS = 10 * 60 * 1000;
+// aitrainer.work asks consumers to read its feed about once or twice a day.
+// An hour keeps repeat searches cheap while still picking up new listings.
+const AI_FEED_CACHE_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 14_000;
 
-// Test hook: provider payloads are cached for ten minutes in production.
+// Test hook: provider payloads are cached for ten minutes (an hour for the
+// AI-training feed) in production.
 export function clearJobSearchCache() {
   RESPONSE_CACHE.clear();
 }
@@ -350,7 +354,8 @@ export function sortJobs(jobs) {
 export const PROVIDER_LINKS = [
   { name: 'Jobicy', home: 'https://jobicy.com/jobs' },
   { name: 'Remote OK', home: 'https://remoteok.com' },
-  { name: 'Remotive', home: 'https://remotive.com/remote-jobs' }
+  { name: 'Remotive', home: 'https://remotive.com/remote-jobs' },
+  { name: 'AI training', home: 'https://aitrainer.work' }
 ];
 
 function stripHtml(html) {
@@ -379,6 +384,37 @@ function humanizeType(value) {
   return String(raw || '')
     .replace(/_/g, '-')
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+// aitrainer.work publishes platform keys ("mercor", "micro1"). Keep the
+// familiar brand spelling in the UI; unknown platforms fall back to title case.
+const AI_PLATFORM_LABELS = {
+  mercor: 'Mercor',
+  ethos: 'Ethos',
+  alignerr: 'Alignerr',
+  outlier: 'Outlier',
+  mindrift: 'Mindrift',
+  micro1: 'micro1',
+  turing: 'Turing',
+  dataannotation: 'DataAnnotation',
+  handshake: 'Handshake AI',
+  anyoneai: 'Anyone AI',
+  babelaudio: 'Babel Audio',
+  sme_careers: 'SME Careers',
+  rws: 'RWS',
+  innodata: 'Innodata',
+  terac: 'Terac',
+  improvarena: 'Improv Arena',
+  hashlist: 'Hashlist',
+  xai: 'xAI',
+  sovrano: 'Sovrano AI'
+};
+
+function platformLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'AI training platform';
+  const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  return AI_PLATFORM_LABELS[key] || raw.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
 function salaryText({ min, max, currency, period }) {
@@ -464,6 +500,43 @@ export function normalizeProviderJobs(providerId, data) {
       });
   }
 
+  if (providerId === 'aitrainer') {
+    const jobs = data && Array.isArray(data.jobs) ? data.jobs : [];
+    return jobs
+      .filter((job) => job && job.title && job.url)
+      .map((job) => {
+        const geography = Array.isArray(job.geographic_restrictions)
+          ? job.geographic_restrictions.map(String).filter(Boolean)
+          : [];
+        const countries = Array.isArray(job.eligible_countries)
+          ? job.eligible_countries.map(String).filter(Boolean)
+          : [];
+        const tags = [].concat(
+          Array.isArray(job.search_tags) ? job.search_tags : [],
+          Array.isArray(job.domains) ? job.domains : []
+        ).map(String);
+
+        return {
+          id: 'aitrainer-' + job.id,
+          providerId: 'aitrainer',
+          provider: 'aitrainer.work',
+          // CC BY 4.0 requires each listing to link to its own page there.
+          providerHome: job.url,
+          title: String(job.title).trim(),
+          company: platformLabel(job.platform || job.company),
+          location: countries.length ? countries.join(', ') : geography.join(', '),
+          url: job.url,
+          postedAt: jobDate(job.first_seen || job.last_seen),
+          type: humanizeType(job.employment_type || (job.pay_model === 'hourly' ? 'contract' : '')),
+          level: String(job.experience_level || '').trim(),
+          salary: String(job.pay_text || '').trim(),
+          category: String(job.domain || '').trim(),
+          tags,
+          description: ''
+        };
+      });
+  }
+
   if (providerId === 'remoteok') {
     // The first array item is Remote OK's API terms notice, not a job.
     const jobs = Array.isArray(data) ? data.filter((job) => job && job.id && job.position && job.url) : [];
@@ -500,9 +573,9 @@ export function normalizeProviderJobs(providerId, data) {
   return [];
 }
 
-async function fetchJson(url, fetchImpl) {
+async function fetchJson(url, fetchImpl, cacheMs = CACHE_MS) {
   const cached = RESPONSE_CACHE.get(url);
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
+  if (cached && Date.now() - cached.at < cacheMs) return cached.data;
 
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS) : null;
@@ -586,10 +659,75 @@ async function loadRemoteOk(query, fetchImpl) {
   return normalizeProviderJobs('remoteok', data);
 }
 
+const AI_FEED_PAGE_SIZE = 500;
+
+async function loadAiTrainingPage(fetchImpl, offset = 0) {
+  // The feed has no keyword search, so pull one page at a time (500 is the
+  // API maximum) and let the local role match do the filtering. compact=1
+  // drops long descriptions we do not need; the listing link carries them.
+  const start = Math.max(0, Math.floor(Number(offset) || 0));
+  const url = 'https://aitrainer.work/api/jobs.json?limit=' + AI_FEED_PAGE_SIZE +
+    '&offset=' + start + '&compact=1';
+  const data = await fetchJson(url, fetchImpl, AI_FEED_CACHE_MS);
+
+  const total = Number(data && data.total) || 0;
+  const nextRaw = data && data.next_offset;
+  const nextOffset = nextRaw != null && Number.isFinite(Number(nextRaw))
+    ? Number(nextRaw)
+    : (start + AI_FEED_PAGE_SIZE < total ? start + AI_FEED_PAGE_SIZE : null);
+
+  const returned = Number(data && data.returned);
+  return {
+    jobs: normalizeProviderJobs('aitrainer', data),
+    total,
+    loaded: Number.isFinite(returned) && returned > 0
+      ? returned
+      : (Array.isArray(data && data.jobs) ? data.jobs.length : 0),
+    nextOffset
+  };
+}
+
+async function loadAiTraining(query, fetchImpl) {
+  return loadAiTrainingPage(fetchImpl, 0);
+}
+
+/**
+ * Fetch one older page of the AI-training feed and apply the same role and
+ * eligibility rules as the first search. Used by the "load older roles" button.
+ */
+export async function searchAiTrainingPage(query, options = {}) {
+  const trimmed = String(query || '').trim();
+  const target = String(options.target || DEFAULT_TARGET).trim() || DEFAULT_TARGET;
+  const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  if (!fetchImpl) throw new Error('Network access is not available.');
+
+  if (!trimmed) {
+    return { query: '', target, jobs: [], offset: 0, total: 0, loaded: 0, nextOffset: null };
+  }
+
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  const page = await loadAiTrainingPage(fetchImpl, offset);
+  const jobs = matchJobs(page.jobs, trimmed).map((job) => ({
+    ...job,
+    eligibility: classifyEligibility(job.location, target)
+  }));
+
+  return {
+    query: trimmed,
+    target,
+    jobs,
+    offset,
+    total: page.total,
+    loaded: page.loaded,
+    nextOffset: page.nextOffset
+  };
+}
+
 const PROVIDERS = [
   { id: 'jobicy', name: 'Jobicy', home: 'https://jobicy.com/jobs', load: loadJobicy },
   { id: 'remoteok', name: 'Remote OK', home: 'https://remoteok.com', load: loadRemoteOk },
-  { id: 'remotive', name: 'Remotive', home: 'https://remotive.com/remote-jobs', load: loadRemotive }
+  { id: 'remotive', name: 'Remotive', home: 'https://remotive.com/remote-jobs', load: loadRemotive },
+  { id: 'aitrainer', name: 'AI training', home: 'https://aitrainer.work', load: loadAiTraining }
 ];
 
 function dedupeJobs(jobs) {
@@ -629,14 +767,19 @@ export async function searchJobs(query, options = {}) {
   settled.forEach((result, index) => {
     const provider = PROVIDERS[index];
     if (result.status === 'fulfilled') {
-      const loaded = result.value || [];
+      const value = result.value;
+      const loaded = Array.isArray(value)
+        ? value
+        : (value && Array.isArray(value.jobs) ? value.jobs : []);
       jobs = jobs.concat(loaded);
       providers.push({
         id: provider.id,
         name: provider.name,
         home: provider.home,
         status: loaded.length ? 'ok' : 'empty',
-        loaded: loaded.length,
+        loaded: value && Number.isFinite(Number(value.loaded)) ? Number(value.loaded) : loaded.length,
+        total: value && Number.isFinite(Number(value.total)) ? Number(value.total) : 0,
+        nextOffset: value && value.nextOffset != null ? value.nextOffset : null,
         count: 0,
         error: ''
       });

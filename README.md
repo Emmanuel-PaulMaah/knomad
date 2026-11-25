@@ -28,8 +28,8 @@ Sync rules:
 
 ## What it does
 
-- **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus 14-day activity and status charts that also count Together work, your next scheduled events, recent activity, and a preview of your base resume.
-- **Job search** — type a role, and knomad queries three public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
+- **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus activity and status charts that also count Together work, your next scheduled items from the calendar, recent activity, and a daily Wiktionary word with a resume-relevant Wikipedia read.
+- **Job search** — type a role, and knomad queries four public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
 - **Kniggurs & shared inbox** — on the **Together** page, add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in. Each shared job has a reply thread so you can talk about that lead.
 - **Together** — the shared workspace (circles, to-do lists, projects, learning, shelf, CRM), a peer of Jobs with equal topical weight. Dated items appear on the calendar next to interviews and reminders, and the Dashboard shows job metrics and Together cards side by side, so a shared plan and your own job search live in one month view.
 - **One-click job intake** — the big **+** opens a flow that reads the job page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application.
@@ -38,7 +38,7 @@ Sync rules:
 - **Application page** — status, notes, the job description used, scheduled interviews and reminders, a tailored resume preview, and interview practice in one place.
 - **Tailored resume document** — every generated resume is rendered as a styled document, with copy, print, and PDF download actions.
 - **Interview practice** — a step-by-step sequence: read a likely question, write your answer, move to the next one, then get an overall score and per-question feedback.
-- **Calendar** — month view of every interview, reminder, to-do due date, project target, and CRM follow-up, with a source filter, a day list, and the next 30 days at a glance.
+- **Calendar** — month view of every interview, reminder, to-do due date, project target, and CRM follow-up, with a source filter, a day list, and the next 30 days at a glance. Calendar and application-event rows have an **Add to Google Calendar** link that opens a prefilled Google event.
 - **Settings** — optional cloud sign-in and sync, a Google Gemini API key, browser notifications, a JSON backup export, or erase local and cloud data.
 
 ## Job search
@@ -47,13 +47,14 @@ Open **Find jobs** in the sidebar, type a role, and pick the country you can wor
 
 The search is entirely deterministic. No model scores the roles, and no API key is needed.
 
-**Sources.** Knomad asks three public, key-less APIs that allow browser requests:
+**Sources.** Knomad asks four public, key-less APIs that allow browser requests:
 
 | Provider | Endpoint | Notes |
 |---|---|---|
 | Jobicy | `jobicy.com/api/jobs` | Tagged search, plus Jobicy's worldwide-only feed; the last 7 days |
 | Remote OK | `remoteok.com/api` | Full public feed; needs the follow link and attribution shown in the page footer |
 | Remotive | `remotive.com/api/remote-jobs` | Latest public batch; role matching happens locally |
+| AI training (aitrainer.work) | `aitrainer.work/api/jobs.json` | Newest 500 roles from 28 AI-training platforms, including Mercor, Ethos, Alignerr, Outlier and Mindrift. CC BY 4.0: each listing links to its aitrainer.work page, which carries the apply link. Older pages load on request |
 
 **Eligibility.** The location string each provider publishes decides the verdict:
 
@@ -66,12 +67,17 @@ When a board leaves its location field blank, knomad looks in the description fo
 
 **Role matching.** The query is lowercased and split into tokens. Arrangement words ("remote", "full-time") and seniority words ("senior", "lead") are dropped, and small synonym groups map developer↔engineer, frontend↔front end, support↔customer service, and similar pairs. A role is kept when the share of matched tokens is at least 60% for a one- or two-token query, or 50% for a longer one. Provider-side search is loose, so this local pass is what removes unrelated listings.
 
-Provider failures are isolated: if one API is down, the other two still return results, and the provider chip shows **unavailable**. Responses are cached in memory for ten minutes.
+Provider failures are isolated: if one API is down, the other providers still return results, and the provider chip shows **unavailable**. Responses are cached in memory for ten minutes; the AI-training feed is cached for an hour because its publisher asks consumers to read it only once or twice a day.
 
-Run the search tests with:
+The AI-training feed has no keyword search, so the first search scans its newest 500 roles and then applies the normal role and eligibility rules. Below the results, **Load 500 older roles** fetches the next page, appends any new matches, and shows how many of the feed's roles have been scanned so far. Every batch is cached by offset, so paging back over the same page does not hit the network again.
+
+Mercor and Ethos do not publish their own job-board APIs, and their marketplace pages are login- or matching-gated. Their roles reach knomad through aitrainer.work's licensed feed instead of a scraper, so the listings stay attributable and the app keeps working when either platform changes its site.
+
+Run the job-search and daily-read tests with:
 
 ```bash
 npm run test:search
+npm run test:daily
 ```
 
 **Limitations.** The public feeds skew heavily toward US-only roles, and most Remote OK postings leave their location blank. A strict search can therefore return only a handful of verified roles. Eligibility is read from the posting's own metadata — always confirm the location on the job page before applying.
@@ -83,7 +89,7 @@ Kniggurs live in your knomad account, so the **Together → Kniggurs** tab needs
 1. Open **Together** and select the **Kniggurs** tab, then enter a friend's email. They need an existing knomad account.
 2. They see the request under **Requests** and choose **Accept** or **Decline**. If both people add each other at the same time, the second request completes the friendship instead of leaving two pending invites.
 3. Send a job in one of two ways:
-   - **Send a job** in the Kniggurs tab (or the page header) opens a short form: pick the friend, add a company, role, link, and note.
+   - **Send a job** in the **Shared jobs** card on the Kniggurs tab opens a short form: pick the friend, add a company, role, link, and note.
    - **Send to friend** on any application page carries that application's company, role, link, and job description with it.
    - **Send** on a job search result shares that lead before you track it yourself.
 4. The recipient sees it in the **Inbox** tab of the **Shared jobs** card, with an unread count on the rail icon. They can **Open posting**, **Track job**, **Mark read**, or **Dismiss** it. **Track job** starts the normal Add job flow with the details prefilled.
@@ -92,6 +98,8 @@ Kniggurs live in your knomad account, so the **Together → Kniggurs** tab needs
 **Sent** is the second tab on the same card and keeps a record of what you shared; each sent job has the same reply thread. The tabs show how many jobs are on each side, so a conversation you started is never buried in a separate card. Dismissing a job hides it from the recipient's inbox but leaves the sender's copy intact. Removing a friend also cancels any unanswered request between the two of you, and stops new jobs from being sent either way.
 
 The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Together page. Unread counts, reply notifications, and new-job toasts work from any page. A reply box you are actively typing in is left alone by the silent poll; drafts stay put until you send or close the thread.
+
+While you are signed in, that same poll refreshes your presence heartbeat. A kniggur who has polled in the last 90 seconds shows a small sage dot after their name and a ring on their avatar — in the friend list, requests, shared-job inbox and sent lists, reply threads, circle members, task assignees, and contact notes. Hidden tabs stop polling, so someone who closes the tab or leaves the page turns offline after the window passes.
 
 Friend actions need a valid session token, not just a remembered account. If that token can no longer be minted, knomad clears the stale signed-in state and asks you to sign in again — Settings never keeps claiming you are synced while new requests are being rejected.
 
@@ -147,16 +155,37 @@ The dashboard reads from your local applications and updates every time you add 
 | Active pipeline | Applications currently **Applied** or **Interviewing** |
 | Response rate | Share of applications that moved past **Applied** |
 
-Two charts sit below the cards:
+Two charts can sit below the cards, each toggled separately:
 
 - **Activity** — applications added plus Together tasks completed and books finished per day over the last 14 days, drawn as one stacked bar per day. Hover a bar for the date and the split, or read the Jobs and Together totals below the axis.
 - **Status breakdown** — current application status distribution with counts and percentages, plus a Together group for open/done tasks and reading/finished books, and a combined footer.
 
-**Settings → Dashboard** toggles both charts off for a narrower dashboard. The preference is per browser (`knomad_dash_insights`) and is not synced.
+**Settings → Dashboard** shows an independent checkbox for each chart. Turning both off leaves a narrower dashboard. The preferences are per browser (`knomad_dash_activity` and `knomad_dash_status`) and are not synced.
 
 To make interview counts accurate, every status change is timestamped. Each application stores a `statusHistory` array; changing status in the detail view appends an entry instead of overwriting the old one. Applications saved before this feature existed get a single history entry from their current status and applied date.
 
 The metrics are straightforward counts, not projections. With no applications the cards show zero; the charts stay empty until you add a job or finish something in Together.
+
+## Daily read
+
+Below the metric cards, the dashboard shows today's Wiktionary **Word of the Day** and a Wikipedia **Article of the day**. Both come from keyless, browser-side Wikimedia APIs, so they work without a model or API key.
+
+The article starts with the day's featured article. If one of the day's most-read articles matches a skill or resume keyword, knomad picks that article instead and says which term matched; otherwise the featured article stays. The word is always today's Wiktionary entry, with its definition and part of speech. When the word or article overlaps your resume, the card names the matching terms. One source failing leaves the other card visible, and both responses are cached for six hours.
+
+## Daily read portal
+
+**Settings → Daily read** adds a Wikipedia portal selector for the article. The selected portal (or **Auto**, which reads your headline, summary, and skills) determines which Wikipedia article-of-the-day the card shows, and the option is saved with your profile (`dailyPortal`). The portal article is fetched from a clean, curated Wikipedia source page, summarized by the Wikipedia summary API, and cached for 24 hours. If the portal source or summary fails, knomad falls back to the general featured/most-read feed instead of failing the card.
+
+The available portals and how they are chosen:
+
+- **Computer science & programming** — from `Portal:Computer programming/Selected articles` (featured, good, and vital picks).
+- **Mathematics**, **Physics**, **Medicine**, and **Literature** — from each WikiProject's recognized content list (featured and good articles).
+- **General Wikipedia feed** — the existing featured and most-read articles, chosen by skills as before.
+- **Auto** — tries each portal in order (computer programming first) against your headline, summary, skills, and resume; if none matches well, the feed is used. Developer profiles with Python, JavaScript, SQL, Kubernetes, and similar terms usually land in computer programming.
+
+Article picks rotate by date, so the daily portal read changes every day even inside one portal. The word-of-the-day text and Wiktionary parsing are unaffected.
+
+## Calendar and reminders
 
 ## Calendar and reminders
 
@@ -167,9 +196,11 @@ Every application can hold any number of scheduled events. Open an application f
 - **Remind me** — at the time, 15 minutes, 1 hour, 1 day, or 1 week before.
 - **Title or note** — optional; falls back to "Interview" or "Reminder".
 
-The **Calendar** page shows a Sunday-start month grid with a dot for each scheduled day. Select a day to see its items, step through months with the arrows, or jump back with **Today**. The source filter narrows the view to **All sources**, **Just mine**, or a single circle, and is remembered on this device. The sidebar lists the next 30 days, and the dashboard's **Next up** card shows the soonest events. Clicking an event on the dashboard opens its application.
+The **Calendar** page shows a Sunday-start month grid with a dot for each scheduled day. Select a day to see its items, step through months with the arrows, or jump back with **Today**. The source filter narrows the view to **All sources**, **Just mine**, or a single circle, and is remembered on this device. The sidebar lists the 30 days from the selected day (or from today when the selected day is past), and the dashboard's **Next up** card shows the soonest items from the same calendar feed, each tagged with a source pill. Its small dropdown chooses the timeline covered — **1d**, **7d**, or **30d** — and the choice is remembered on this device. Clicking a row opens its application, task, project, or contact.
 
-Calendar items come from three places: application interviews/reminders, Together tasks with a due date, and CRM contacts with a next follow-up. A task row opens the task, and its check button marks the task done in place; a follow-up row opens the contact.
+Calendar items come from four places: application interviews/reminders, Together tasks with a due date, project target dates, and CRM contacts with a next follow-up. A task row opens the task, and its check button marks the task done in place; a follow-up row opens the contact.
+
+Each row's calendar icon opens Google Calendar with the title, time (or all-day date), and source already filled in. This is a one-way, per-click export: edits or deletions in knomad do not update the Google Calendar copy, so delete or reschedule it there too if plans change. Timed items are sent as one-hour blocks and use the browser's time zone.
 
 Reminders are checked while knomad is open:
 
@@ -254,7 +285,7 @@ knomad/
 ├── sync.js               # Browser Neon Auth + Function + Realtime clients
 ├── neon.ts               # Neon branch policy (auth, functions, bucket, gateway, realtime)
 ├── src/function/index.ts # knomadsync Hono API, JWT verification, Postgres/S3/AI/Realtime
-├── sql/schema.sql        # knomad_docs, friendships, shared jobs, circles, tasks, projects, books, contacts
+├── sql/schema.sql        # knomad_docs, friendships, presence, shared jobs, circles, tasks, projects, books, contacts
 ├── scripts/setup-db.mjs  # Applies the schema
 ├── scripts/test-services.mjs # End-to-end service proof
 ├── scripts/test-job-search.mjs # Eligibility and role-matching tests
@@ -357,7 +388,7 @@ Stored under these `localStorage` keys:
 
 | Key | Contents |
 |---|---|
-| `knomad_profile` | Name, profile photo (data URL), contact details, links, summary, skills, resume text, file name, and archived file key |
+| `knomad_profile` | Name, profile photo (data URL), contact details, links, summary, skills, resume text, file name, and archived file key. Also stores the daily read portal (`dailyPortal`). |
 | `knomad_applications` | Applications, statuses, status history, notes, tailored resumes, interview prep, job descriptions, scheduled interviews/reminders, and practice answers/scores |
 | `knomad_gemini_key` | Your Gemini API key — device-local only, never synced |
 | `knomad_notified` | Reminder keys that have already fired, so they don't repeat |
@@ -365,7 +396,10 @@ Stored under these `localStorage` keys:
 | `knomad_sync_cursor_<userId>` | Per-user server cursor for incremental pulls |
 | `knomad_space_<userId>` | Last loaded circles, lists, tasks, contacts, and member names, so Together renders before the first request returns |
 | `knomad_cal_scope` | The calendar source filter you last chose (`all`, `me`, or a circle id) |
-| `knomad_dash_insights` | Whether the dashboard Activity and Status breakdown charts are shown (`on` or `off`) |
+| `knomad_upcoming_window` | The dashboard **Next up** timeline (`1d`, `7d`, or `30d`) |
+| `knomad_dash_activity` | Whether the dashboard Activity chart is shown (`on` or `off`) |
+| `knomad_dash_status` | Whether the dashboard Status breakdown chart is shown (`on` or `off`) |
+| `knomad_dash_insights` | Legacy shared flag from older builds; read once to seed the two preferences above |
 
 - The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`. It is never included in a synced document.
 - When you sign in, profile and application documents (and uploaded resume files) are sent to your Neon branch. Row access is scoped by the verified JWT subject.
@@ -373,6 +407,7 @@ Stored under these `localStorage` keys:
 - **Settings → Erase all local data** clears your workspace documents but does not remove friendships, shared jobs, circles, or shared tasks; remove friends individually in Together → Kniggurs, and archive circles on Together, if you want to disconnect.
 - Job URLs are sent to the reader services above when fetching a page.
 - **Settings → Export backup** writes a JSON file; **Erase all local data** removes local data and, when signed in, soft-deletes the cloud copies too.
+- Destructive actions (deleting an application, event, task, list, project, book, contact, note, circle, or shared job; clearing the resume or Gemini key; erasing data) ask for confirmation in a shared card. Cancel, Escape, and clicking the backdrop all abort; the destructive button is never focused by default.
 - Cloud sync is optional. Signing out leaves your local workspace intact.
 
 ## Known limitations

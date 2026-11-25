@@ -277,7 +277,14 @@ type SocialUser = {
   email: string;
   image: string | null;
   headline: string;
+  online: boolean;
+  lastSeenAt: string | null;
 };
+
+// A heartbeat every 30 seconds keeps someone online. Two missed beats (or a
+// hidden tab that stops polling) turns the dot off, so the window is a little
+// longer than one poll but short enough to feel live.
+const PRESENCE_WINDOW_SQL = "90 seconds";
 
 function cleanText(value: unknown, max: number): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -299,7 +306,16 @@ function safeJobUrl(value: unknown): string {
 }
 
 function fallbackUser(id: string): SocialUser {
-  return { id, name: "Knomad user", email: "", image: null, headline: "" };
+  return { id, name: "Knomad user", email: "", image: null, headline: "", online: false, lastSeenAt: null };
+}
+
+async function touchPresence(userId: string) {
+  await pool.query(
+    `insert into public.knomad_presence (user_id, last_seen_at)
+     values ($1, now())
+     on conflict (user_id) do update set last_seen_at = excluded.last_seen_at`,
+    [userId],
+  );
 }
 
 /**
@@ -313,7 +329,7 @@ async function loadUsers(ids: string[]): Promise<Map<string, SocialUser>> {
   const map = new Map<string, SocialUser>();
   if (!unique.length) return map;
 
-  const [accounts, profiles] = await Promise.all([
+  const [accounts, profiles, presence] = await Promise.all([
     pool.query(
       `select id::text as id, name, email, image
          from neon_auth.user
@@ -328,6 +344,13 @@ async function loadUsers(ids: string[]): Promise<Map<string, SocialUser>> {
           and user_id = any($1::text[])`,
       [unique],
     ),
+    pool.query(
+      `select user_id, last_seen_at,
+              last_seen_at > now() - interval '${PRESENCE_WINDOW_SQL}' as online
+         from public.knomad_presence
+        where user_id = any($1::text[])`,
+      [unique],
+    ),
   ]);
 
   const profileRows = new Map<string, Record<string, unknown>>();
@@ -335,15 +358,26 @@ async function loadUsers(ids: string[]): Promise<Map<string, SocialUser>> {
     profileRows.set(row.user_id, row.payload && typeof row.payload === "object" ? row.payload : {});
   });
 
+  const presenceRows = new Map<string, { online: boolean; lastSeenAt: string | null }>();
+  presence.rows.forEach((row: any) => {
+    presenceRows.set(row.user_id, {
+      online: Boolean(row.online),
+      lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+    });
+  });
+
   accounts.rows.forEach((row: any) => {
     const profile = profileRows.get(row.id) || {};
     const profileName = typeof profile.name === "string" ? profile.name.trim() : "";
+    const seen = presenceRows.get(row.id);
     map.set(row.id, {
       id: row.id,
       name: profileName || row.name || "Knomad user",
       email: row.email || "",
       image: row.image || null,
       headline: typeof profile.headline === "string" ? profile.headline.trim() : "",
+      online: Boolean(seen && seen.online),
+      lastSeenAt: seen ? seen.lastSeenAt : null,
     });
   });
 
@@ -1088,13 +1122,18 @@ async function spaceSnapshot(userId: string) {
   contactNotes.rows.forEach((row: any) => ids.add(row.author_id));
 
   const users = await loadUsers(Array.from(ids));
-  const people: Record<string, { id: string; name: string; email: string; headline: string }> = {};
+  const people: Record<
+    string,
+    { id: string; name: string; email: string; headline: string; online: boolean; lastSeenAt: string | null }
+  > = {};
   users.forEach((person, id) => {
     people[id] = {
       id,
       name: person.name,
       email: person.email,
       headline: person.headline,
+      online: person.online,
+      lastSeenAt: person.lastSeenAt,
     };
   });
 
@@ -1147,6 +1186,9 @@ app.get("/me", async (c) => {
 
 app.get("/social", async (c) => {
   const userId = await requireUser(c.req.header("authorization"));
+  // The social snapshot doubles as the presence heartbeat: it is already polled
+  // every 30 seconds from any page and on every tab wake-up.
+  await touchPresence(userId);
   return c.json(await socialSnapshot(userId));
 });
 
