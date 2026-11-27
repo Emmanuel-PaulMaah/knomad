@@ -797,6 +797,16 @@
 
     .event-gcal:hover { color: var(--accent); border-color: var(--accent); }
 
+    .event-ics {
+      width: auto;
+      padding: 0 6px;
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: 0.04em;
+    }
+
+    .event-row .event-ics:hover { color: var(--accent); border-color: var(--accent); }
+
     .event-empty {
       padding: 16px 4px;
       color: var(--muted);
@@ -1049,6 +1059,36 @@
 
     /* ---------- Recent list ---------- */
 
+    .weekly-digest { display: grid; gap: 14px; margin-top: 4px; }
+    .digest-section { display: grid; gap: 8px; }
+    .digest-section-head {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .digest-items { display: grid; gap: 4px; }
+    .digest-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .digest-item:hover { background: var(--panel-2); border-color: var(--line-strong); }
+    .digest-item .cell-main { font-size: 13px; font-weight: 500; }
+    .digest-item .cell-sub { font-size: 12px; color: var(--muted); }
+
     .recent-list { display: flex; flex-direction: column; }
 
     .recent-row {
@@ -1056,19 +1096,44 @@
       align-items: center;
       gap: 12px;
       width: 100%;
-      padding: 12px 0;
-      border: 0;
       border-top: 1px solid var(--line);
       background: transparent;
       color: inherit;
-      text-align: left;
-      cursor: pointer;
       transition: background-color 0.14s var(--ease);
-      font: inherit;
     }
 
     .recent-row:first-child { border-top: 0; }
     .recent-row:hover { background: var(--panel-2); }
+
+    .recent-open {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      min-width: 0;
+      padding: 12px 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .recent-posting {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    .recent-posting:hover { color: var(--accent); background: var(--panel); }
 
     .recent-no {
       flex-shrink: 0;
@@ -1838,6 +1903,12 @@
       white-space: nowrap;
     }
 
+    td a.cell-link { text-decoration: none; }
+    td a.cell-link:hover { color: var(--accent); text-decoration: underline; }
+
+    td .cell-warn { color: var(--amber); }
+    td .cell-muted { color: var(--muted); font-weight: 400; }
+
     .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
     /* ---------- Badges ---------- */
@@ -1988,6 +2059,38 @@
 
     details.paste-details .field { margin-top: 12px; margin-bottom: 0; }
 
+    .add-modes {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      margin: 0 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg-2);
+    }
+
+    .add-mode {
+      flex: 1;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .add-mode:hover { color: var(--text); }
+    .add-mode.active { background: var(--panel-2); color: var(--text); }
+
+    .manual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field-optional { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+    @media (max-width: 520px) {
+      .manual-grid { grid-template-columns: 1fr; }
+    }
+
     /* ---------- Progress steps ---------- */
 
     .steps {
@@ -2064,6 +2167,21 @@
     }
 
     .progress-error p { margin: 0 0 12px; color: #ffb3b3; font-size: 13px; }
+
+    .progress-error p.error-hint { margin: 6px 0 12px; color: var(--muted); font-size: 12.5px; }
+
+    .verify-source {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin: -8px 0 18px;
+      font-size: 12.5px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+
+    .verify-source a { color: var(--accent); text-decoration: none; font-weight: 500; }
+    .verify-source a:hover { text-decoration: underline; }
 
     /* ---------- Detail modal ---------- */
 
@@ -2196,6 +2314,43 @@
 
     .app-meta-line a:hover { text-decoration: underline; }
 
+    .date-edit {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .date-edit input[type="date"] {
+      width: auto;
+      padding: 3px 6px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0;
+      text-transform: none;
+      cursor: pointer;
+    }
+
+    .date-edit input[type="date"]:hover,
+    .date-edit input[type="date"]:focus {
+      border-color: var(--line);
+      background: var(--bg-2);
+      color: var(--text);
+    }
+
+    .next-step-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 150px;
+      gap: 12px;
+    }
+
+    @media (max-width: 640px) {
+      .next-step-grid { grid-template-columns: 1fr; }
+    }
+
     .app-actions {
       display: flex;
       align-items: center;
@@ -2206,6 +2361,8 @@
     }
 
     .app-actions select { width: auto; min-width: 150px; padding: 8px 34px 8px 11px; font-size: 12px; }
+    .stage-age { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+    .stage-age.is-stale { color: var(--amber); }
 
     .app-tabs {
       display: flex;
@@ -2273,6 +2430,78 @@
       background: var(--bg-2);
       overflow: auto;
       max-height: 780px;
+    }
+
+    .coverage-card { margin-top: 20px; }
+    .coverage-meter {
+      height: 8px;
+      margin: 2px 0 18px;
+      border-radius: 999px;
+      background: var(--line);
+      overflow: hidden;
+    }
+    .coverage-meter span {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--sage);
+      transition: width 0.35s ease;
+    }
+    .coverage-meter span.is-mid { background: var(--amber); }
+    .coverage-meter span.is-low { background: var(--red); }
+    .coverage-groups { display: grid; gap: 14px; }
+    .coverage-group-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .coverage-group-label { font-size: 12px; font-weight: 600; color: var(--text); }
+    .coverage-count {
+      display: inline-block;
+      min-width: 18px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+    }
+    .coverage-hint { font-size: 12px; color: var(--muted); }
+    .coverage-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .coverage-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 12.5px;
+    }
+    .coverage-chip.covered { border-color: rgba(147, 179, 154, 0.42); background: rgba(147, 179, 154, 0.1); }
+    .coverage-chip.weak { border-color: rgba(201, 160, 99, 0.42); background: rgba(201, 160, 99, 0.1); }
+    .coverage-chip.missing { border-color: rgba(207, 111, 95, 0.36); background: rgba(207, 111, 95, 0.08); color: var(--text-2); }
+
+    .cover-letter-card { margin-top: 20px; }
+
+    .cover-letter-card .resume-meta {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 11.5px;
+      line-height: 1.4;
+    }
+
+    .cover-letter-card .output { max-height: 420px; }
+    .cover-letter-card .resume-actions[hidden] { display: none; }
+
+    .cover-letter-card .cover-letter-input {
+      display: block;
+      width: 100%;
+      min-height: 240px;
+      resize: vertical;
     }
 
     .resume-doc {
@@ -2620,8 +2849,74 @@
 
     .practice-feedback li { margin: 3px 0; }
 
-    .brief-card { margin-top: 20px; }
-    .brief-card .output { max-height: 420px; }
+    .practice-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 10px; }
+    .practice-type {
+      display: inline-block;
+      margin: 14px 0 0;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 11px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .practice-badge {
+      display: inline-block;
+      margin-left: 4px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .practice-star { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
+    .star-chip {
+      padding: 3px 9px;
+      border: 1px dashed var(--line-strong);
+      border-radius: 999px;
+      font-size: 11.5px;
+      color: var(--muted);
+      transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    }
+    .star-chip.on {
+      border-style: solid;
+      border-color: rgba(147, 179, 154, 0.5);
+      background: rgba(147, 179, 154, 0.12);
+      color: var(--sage);
+    }
+    .practice-outline {
+      margin: 10px 0 4px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+    }
+    .practice-outline summary { cursor: pointer; padding: 9px 12px; font-size: 12.5px; color: var(--text-2); }
+    .practice-outline-body {
+      margin: 0;
+      padding: 0 12px 12px;
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .practice-result-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 8px; }
+    .practice-result-meta .practice-type { margin: 0; }
+    .practice-probe { font-size: 12px; color: var(--amber); }
+    .practice-rubric { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+    .rubric-chip {
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+    .rubric-chip.full { border-color: rgba(147, 179, 154, 0.45); color: var(--sage); }
+    .rubric-chip.zero { border-color: rgba(207, 111, 95, 0.4); color: var(--red); }
+
 
     /* ---------- Friends & shared inbox ---------- */
 
@@ -2724,6 +3019,11 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .social-person-main .social-last-seen {
+      font-size: 11px;
+      opacity: 0.85;
     }
 
     .social-person-actions,
@@ -4575,6 +4875,17 @@
 
           <div class="dash-grid">
             <div class="stack">
+              <div class="card weekly-digest-card" id="weeklyDigestCard">
+                <div class="card-head">
+                  <div>
+                    <h3>This week</h3>
+                    <p class="chart-note" id="weeklyDigestRange"></p>
+                  </div>
+                  <button class="btn ghost small" data-page-target="tracker">Open tracker</button>
+                </div>
+                <div class="weekly-digest" id="weeklyDigest"></div>
+              </div>
+
               <div class="card">
                 <div class="card-head">
                   <h3>Next up</h3>
@@ -5072,13 +5383,23 @@
                 <input type="search" id="searchInput" placeholder="Company, role, or notes">
               </div>
               <div class="field">
-                <label for="statusFilter">Status</label>
+                <label for="statusFilter">Stage</label>
                 <select id="statusFilter">
-                  <option value="all">All statuses</option>
+                  <option value="all">All stages</option>
                   <option value="applied">Applied</option>
                   <option value="interviewing">Interviewing</option>
                   <option value="offer">Offer</option>
                   <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="trackerSort">Sort</label>
+                <select id="trackerSort">
+                  <option value="newest">Newest added</option>
+                  <option value="oldest">Oldest added</option>
+                  <option value="company">Company A–Z</option>
+                  <option value="due">Next step due</option>
+                  <option value="attention">Needs attention</option>
                 </select>
               </div>
             </div>
@@ -5093,6 +5414,7 @@
                     <th>Role</th>
                     <th>Status</th>
                     <th>Added</th>
+                    <th>Next step</th>
                     <th style="text-align: right;">Actions</th>
                   </tr>
                 </thead>
@@ -5118,6 +5440,7 @@
                 <div class="cal-nav">
                   <select class="cal-scope" id="calScopeFilter" aria-label="Calendar source"></select>
                   <button class="btn ghost small" id="calTodayBtn" type="button">Today</button>
+                  <button class="btn ghost small" id="calIcsBtn" type="button">Export .ics</button>
                   <button class="cal-arrow" id="calPrevBtn" type="button" aria-label="Previous month">‹</button>
                   <button class="cal-arrow" id="calNextBtn" type="button" aria-label="Next month">›</button>
                 </div>
@@ -5430,17 +5753,35 @@
               <p class="eyebrow" id="detailCompany">Company</p>
               <h2 id="detailPosition">Role</h2>
               <div class="app-meta-line">
-                <span class="date" id="detailDate"></span>
+                <label class="date-edit" for="detailAppliedDate">
+                  <span class="label-mono">Applied</span>
+                  <input type="date" id="detailAppliedDate">
+                </label>
                 <a id="detailLink" href="#" target="_blank" rel="noopener noreferrer">Open posting ↗</a>
               </div>
             </div>
             <div class="app-actions">
-              <label class="sr-only" for="detailStatus">Application status</label>
+              <label class="sr-only" for="detailStatus">Application stage</label>
+              <span class="stage-age" id="detailStageAge"></span>
               <select id="detailStatus">
-                <option value="applied">Applied</option>
-                <option value="interviewing">Interviewing</option>
-                <option value="offer">Offer</option>
-                <option value="rejected">Rejected</option>
+                <optgroup label="Applied">
+                  <option value="saved">Saved</option>
+                  <option value="applied">Applied</option>
+                </optgroup>
+                <optgroup label="Interviewing">
+                  <option value="screening">Recruiter screen</option>
+                  <option value="interviewing">Interviewing</option>
+                  <option value="takehome">Take-home</option>
+                </optgroup>
+                <optgroup label="Offer">
+                  <option value="offer">Offer</option>
+                  <option value="negotiating">Negotiating</option>
+                  <option value="accepted">Accepted</option>
+                </optgroup>
+                <optgroup label="Closed">
+                  <option value="rejected">Rejected</option>
+                  <option value="withdrawn">Withdrawn</option>
+                </optgroup>
               </select>
               <button class="btn ghost small" id="shareAppBtn" type="button">Send to kniggur</button>
               <button class="btn ghost small quiet-danger" id="deleteAppBtn" type="button">Delete</button>
@@ -5459,9 +5800,29 @@
                 <div class="card">
                   <div class="card-head">
                     <h3>Notes</h3>
-                    <button class="btn ghost small" id="saveNotesBtn" type="button">Save notes</button>
+                    <span class="label-mono" id="notesSaved" aria-live="polite"></span>
                   </div>
                   <textarea id="detailNotes" rows="4" placeholder="Recruiter name, follow-up date, next step…"></textarea>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Next step</h3>
+                    <span class="label-mono" id="nextActionSaved" aria-live="polite"></span>
+                  </div>
+                  <div class="next-step-grid">
+                    <div class="field">
+                      <label for="detailNextAction">What's next</label>
+                      <input id="detailNextAction" maxlength="120" placeholder="Follow up with the recruiter">
+                    </div>
+                    <div class="field">
+                      <label for="detailNextActionAt">Due</label>
+                      <input type="date" id="detailNextActionAt">
+                    </div>
+                  </div>
+                  <div class="row-actions" style="justify-content: flex-start; margin-top: 12px;">
+                    <button class="btn ghost small" id="followUpBtn" type="button">Follow up in 7 days</button>
+                  </div>
                 </div>
 
                 <div class="card">
@@ -5469,7 +5830,10 @@
                     <h3>Job description used</h3>
                     <span class="label-mono">Reference</span>
                   </div>
-                  <pre class="output" id="detailJD"></pre>
+                  <details class="paste-details">
+                    <summary>Show the saved description</summary>
+                    <pre class="output" id="detailJD"></pre>
+                  </details>
                 </div>
               </div>
 
@@ -5510,7 +5874,7 @@
                   </div>
                   <div class="event-form-actions">
                     <button class="btn subtle small" type="submit">Add to calendar</button>
-                    <span class="field-help">Reminders fire while knomad is open.</span>
+                    <span class="field-help">Reminders fire while knomad is open. Add to Google Calendar or download .ics so they still fire with the tab closed.</span>
                   </div>
                 </form>
               </div>
@@ -5525,13 +5889,46 @@
                   <p class="resume-meta" id="resumeMetaLine"></p>
                 </div>
                 <div class="resume-actions">
+                  <button class="btn subtle small" id="resumeRetailorBtn" type="button">Re-tailor</button>
                   <button class="btn ghost small" type="button" data-copy="detailResume">Copy text</button>
+                  <button class="btn ghost small" id="resumeDocBtn" type="button">Download Word</button>
                   <button class="btn ghost small" id="resumePrintBtn" type="button">Print</button>
                   <button class="btn primary small" id="resumePdfBtn" type="button">Download PDF</button>
                 </div>
               </div>
               <div class="resume-shell" id="resumePreview"></div>
               <pre id="detailResume" hidden></pre>
+            </div>
+
+            <div class="card coverage-card" id="coverageCard">
+              <div class="card-head resume-card-head">
+                <div>
+                  <h3>Keyword coverage</h3>
+                  <p class="resume-meta" id="coverageMetaLine"></p>
+                </div>
+              </div>
+              <div class="coverage-meter" aria-hidden="true"><span id="coverageBar"></span></div>
+              <div class="coverage-groups" id="coverageGroups"></div>
+              <p class="field-help">A local text match against the saved job description — not an ATS verdict. Add a missing term only if it is true for you.</p>
+            </div>
+
+            <div class="card cover-letter-card" id="coverLetterCard">
+              <div class="card-head resume-card-head">
+                <div>
+                  <h3>Cover letter</h3>
+                  <p class="resume-meta" id="coverLetterMetaLine"></p>
+                </div>
+                <div class="resume-actions">
+                  <button class="btn subtle small" id="coverLetterBtn" type="button">Generate cover letter</button>
+                  <div class="resume-actions" id="coverLetterActions" hidden>
+                    <span class="label-mono" id="coverLetterSaved" aria-live="polite"></span>
+                    <button class="btn ghost small" type="button" data-copy="detailCoverLetter">Copy</button>
+                    <button class="btn ghost small" id="coverLetterDocBtn" type="button">Download Word</button>
+                    <button class="btn primary small" id="coverLetterPdfBtn" type="button">Download PDF</button>
+                  </div>
+                </div>
+              </div>
+              <textarea class="output cover-letter-input" id="detailCoverLetter" rows="14" placeholder="No cover letter yet — generate one from this posting." aria-label="Cover letter"></textarea>
             </div>
           </div>
 
@@ -5542,14 +5939,6 @@
                 <span class="label-mono" id="practiceMeta"></span>
               </div>
               <div id="practiceApp"></div>
-            </div>
-
-            <div class="card brief-card">
-              <div class="card-head">
-                <h3>Generated interview brief</h3>
-                <button class="btn ghost small" type="button" data-copy="detailPrep">Copy</button>
-              </div>
-              <pre class="output" id="detailPrep"></pre>
             </div>
           </div>
         </section>
@@ -5568,21 +5957,61 @@
         <p class="modal-sub">Paste the posting link. knomad reads the page, tailors your resume, drafts interview prep, and files it in your tracker.</p>
 
         <form id="addJobForm">
-          <div class="field">
-            <label for="jobUrl">Job link</label>
-            <input type="url" id="jobUrl" placeholder="https://company.com/jobs/role" required autocomplete="off">
+          <div class="add-modes" role="tablist" aria-label="How to add a job">
+            <button type="button" class="add-mode active" data-add-mode="link" role="tab" aria-selected="true">Job link</button>
+            <button type="button" class="add-mode" data-add-mode="paste" role="tab" aria-selected="false">Paste description</button>
+            <button type="button" class="add-mode" data-add-mode="manual" role="tab" aria-selected="false">Manual entry</button>
           </div>
 
-          <details class="paste-details">
-            <summary>Page blocked or behind a login? Paste the description</summary>
+          <div data-add-panel="link">
             <div class="field">
-              <textarea id="jobPaste" rows="6" placeholder="Paste the job description here. knomad will use this instead of reading the page."></textarea>
+              <label for="jobUrl">Job link</label>
+              <input type="url" id="jobUrl" placeholder="https://company.com/jobs/role" autocomplete="off">
             </div>
-          </details>
+            <p class="field-help">knomad keeps this link so Open posting works from the tracker and application page.</p>
+          </div>
+
+          <div data-add-panel="paste" hidden>
+            <div class="field">
+              <label for="jobPaste">Job description</label>
+              <textarea id="jobPaste" rows="7" placeholder="Paste the job description here. knomad will use this instead of reading the page."></textarea>
+            </div>
+            <div class="field">
+              <label for="jobPasteUrl">Job link <span class="field-optional">optional</span></label>
+              <input type="url" id="jobPasteUrl" placeholder="https://company.com/jobs/role" autocomplete="off">
+            </div>
+            <p class="field-help">Add the link so Open posting still works later. Without it, the application has no source link.</p>
+          </div>
+
+          <div data-add-panel="manual" hidden>
+            <div class="manual-grid">
+              <div class="field">
+                <label for="manualCompany">Company</label>
+                <input id="manualCompany" placeholder="Acme" autocomplete="organization">
+              </div>
+              <div class="field">
+                <label for="manualPosition">Role</label>
+                <input id="manualPosition" placeholder="Frontend Engineer" autocomplete="organization-title">
+              </div>
+            </div>
+            <div class="field">
+              <label for="manualUrl">Job link <span class="field-optional">optional</span></label>
+              <input type="url" id="manualUrl" placeholder="https://company.com/jobs/role" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="manualDate">Date applied</label>
+              <input type="date" id="manualDate">
+            </div>
+            <div class="field">
+              <label for="manualNotes">Notes <span class="field-optional">optional</span></label>
+              <textarea id="manualNotes" rows="3" placeholder="Referral name, recruiter, or how you applied."></textarea>
+            </div>
+            <p class="field-help">Manual entries skip tailoring. You can add a resume later from the application page.</p>
+          </div>
 
           <div class="modal-actions">
             <button type="button" class="btn ghost" data-close>Cancel</button>
-            <button type="submit" class="btn primary">Fetch &amp; tailor</button>
+            <button type="submit" class="btn primary" id="addJobSubmitBtn">Fetch &amp; tailor</button>
           </div>
         </form>
       </div>
@@ -5596,7 +6025,7 @@
           <div id="questionsFields"></div>
 
           <div class="modal-actions">
-            <button type="button" class="btn ghost" data-close>Skip &amp; generate</button>
+            <button type="button" class="btn ghost" data-close>Generate without answers</button>
             <button type="submit" class="btn primary">Use my answers</button>
           </div>
         </form>
@@ -5606,6 +6035,16 @@
         <p class="eyebrow">Before filing</p>
         <h2>Review what was generated</h2>
         <p class="modal-sub" id="verifySub"></p>
+
+        <p class="verify-source">
+          <span class="label-mono">Source</span>
+          <a id="verifySourceLink" href="#" target="_blank" rel="noopener noreferrer"><span id="verifySourceHost"></span> ↗</a>
+        </p>
+
+        <details class="paste-details">
+          <summary>Preview the drafted resume</summary>
+          <pre class="output" id="verifyResumePreview" style="max-height:280px"></pre>
+        </details>
 
         <details class="paste-details">
           <summary>Highlighted passages to double-check</summary>
@@ -5634,7 +6073,11 @@
 
         <div class="progress-error" id="jobError" hidden>
           <p id="jobErrorText"></p>
-          <button class="btn ghost small" type="button" id="retryAddBtn">Try another link</button>
+          <p class="error-hint">You can paste the description instead. knomad keeps this link for <strong>Open posting</strong>.</p>
+          <div class="row-actions" style="justify-content: flex-start; flex-wrap: wrap;">
+            <button class="btn ghost small" type="button" id="retryAddBtn">Try another link</button>
+            <button class="btn subtle small" type="button" id="pasteInsteadBtn">Paste the description</button>
+          </div>
         </div>
       </div>
     </div>

@@ -28,17 +28,17 @@ Sync rules:
 
 ## What it does
 
-- **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus activity and status charts that also count Together work, your next scheduled items from the calendar, recent activity, and a daily Wiktionary word with a resume-relevant Wikipedia read.
+- **Dashboard** — metric cards for applications, interviews in the last 7 days, active pipeline, and response rate, plus activity and status charts that also count Together work, your next scheduled items from the calendar, a **This week** digest, recent activity, and a daily Wiktionary word with a resume-relevant Wikipedia read.
 - **Job search** — type a role, and knomad queries four public remote-job APIs, keeps matching titles, and marks which postings are open to Nigeria (or another country you pick). It is rule-based, with no AI and no API key.
-- **Kniggurs & shared inbox** — on the **Together** page, add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in. Each shared job has a reply thread so you can talk about that lead.
+- **Kniggurs & shared inbox** — on the **Together** page, add people by email, accept requests from the notifications card, and send any application (or a new lead) to a friend with a note. Jobs land in their shared inbox, where **Track job** starts the normal intake flow with the title, company, link, and description already filled in, so the recipient's own resume and cover letter are generated from their profile. Each shared job has a reply thread so you can talk about that lead.
 - **Together** — the shared workspace (circles, to-do lists, projects, learning, shelf, CRM), a peer of Jobs with equal topical weight. Dated items appear on the calendar next to interviews and reminders, and the Dashboard shows job metrics and Together cards side by side, so a shared plan and your own job search live in one month view.
-- **One-click job intake** — the big **+** opens a flow that reads the job page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application.
+- **One-click job intake** — the big **+** opens with three ways in: **Job link**, **Paste description** (for blocked or login-walled pages, keeping the link for Open posting), and **Manual entry** for referrals or applications filed elsewhere. The link path reads the page, extracts the company and role, rewrites your resume, writes interview prep, and saves the application. Re-adding a link that is already tracked offers to open the existing application instead of silently duplicating it.
 - **Profile** — name, photo, headline, contact details, links, summary, skills, and your base resume. Saved details appear as a read-only profile sheet; click any detail (or **Edit profile**) to open the fields, then use **Save profile** to keep the changes or **Cancel** to discard them. The photo is cropped to a square, stored with the profile, and shown on the dashboard and top bar. Upload a resume file or paste the text, and knomad fills the profile fields from it (see [Resume autofill](#resume-autofill)).
-- **Tracker** — search and filter applications, then open any one as a full application page with overview, resume, and interview-practice tabs.
-- **Application page** — status, notes, the job description used, scheduled interviews and reminders, a tailored resume preview, and interview practice in one place.
-- **Tailored resume document** — every generated resume is rendered as a styled document, with copy, print, and PDF download actions.
-- **Interview practice** — a step-by-step sequence: read a likely question, write your answer, move to the next one, then get an overall score and per-question feedback.
-- **Calendar** — month view of every interview, reminder, to-do due date, project target, and CRM follow-up, with a source filter, a day list, and the next 30 days at a glance. Calendar and application-event rows have an **Add to Google Calendar** link that opens a prefilled Google event.
+- **Tracker** — search, filter, and sort applications (newest, oldest, company, next step due, or **Needs attention**), then open any one as a full application page. Every row keeps the source link: click the hostname or **Open posting** to jump back to the original job page, and read the **Next step** column for what is due next. The count line shows how many rows need attention.
+- **Application page** — stage, autosaved notes, a **Next step** with a due date, an editable applied date, the job description used, scheduled interviews and reminders, the tailored resume, a cover letter you can generate on demand, and interview practice in one place. **Re-tailor** regenerates the resume and cover letter from the saved description; notes, events, and practice answers stay. **Follow up in 7 days** sets the next step and puts a reminder on the calendar.
+- **Tailored resume document** — every generated resume is rendered as a styled document, with copy, print, PDF, and Word (`.doc`) download actions. A matching cover letter is generated with the tailoring and can be edited inline (it saves as you type), with **Generate cover letter** / **Regenerate**, copy, PDF, and Word download actions on the same tab.
+- **Interview practice** — a step-by-step sequence: read a likely question, write your answer, move at your own pace, then get a local writing signal (length, structure, keywords, fillers) and per-question feedback. It does not verify your facts.
+- **Calendar** — month view of every interview, reminder, to-do due date, project target, and CRM follow-up, with a source filter, a day list, and the next 30 days at a glance. Calendar and application-event rows have an **Add to Google Calendar** link that opens a prefilled Google event, plus an **ICS** download; the calendar header exports the whole current view as a `.ics` file so reminders still work with the tab closed.
 - **Settings** — optional cloud sign-in and sync, a Google Gemini API key, browser notifications, a JSON backup export, or erase local and cloud data.
 
 ## Job search
@@ -99,7 +99,7 @@ Kniggurs live in your knomad account, so the **Together → Kniggurs** tab needs
 
 The inbox refreshes with the normal 30-second cloud poll, when the tab becomes visible, and whenever you open the Together page. Unread counts, reply notifications, and new-job toasts work from any page. A reply box you are actively typing in is left alone by the silent poll; drafts stay put until you send or close the thread.
 
-While you are signed in, that same poll refreshes your presence heartbeat. A kniggur who has polled in the last 90 seconds shows a small sage dot after their name and a ring on their avatar — in the friend list, requests, shared-job inbox and sent lists, reply threads, circle members, task assignees, and contact notes. Hidden tabs stop polling, so someone who closes the tab or leaves the page turns offline after the window passes.
+While you are signed in, that same poll refreshes your presence heartbeat. A kniggur who has polled in the last 90 seconds shows a small sage dot after their name and a ring on their avatar — in the friend list, requests, shared-job inbox and sent lists, reply threads, circle members, task assignees, and contact notes. Hidden tabs stop polling, so someone who closes the tab or leaves the page turns offline after the window passes. Once they are offline, the friend list and circle roster show a relative **last seen** time ("last seen 12m ago", "last seen yesterday"); hovering a name or avatar anywhere presence appears shows the exact timestamp.
 
 Friend actions need a valid session token, not just a remembered account. If that token can no longer be minted, knomad clears the stale signed-in state and asks you to sign in again — Settings never keeps claiming you are synced while new requests are being rejected.
 
@@ -133,16 +133,19 @@ The page refreshes with the normal 30-second cloud poll, when the tab becomes vi
 ## One job, one flow
 
 1. Click the **+** on the dashboard (or **Add job** in the top bar).
-2. Paste the posting URL.
-3. Answer the short **Quick check** step: knomad points at requirements the posting stresses that your base resume doesn't obviously cover. Add a note only if it's true, choose **Use my answers**, or choose **Skip &amp; generate**. Esc closes the whole flow without saving.
+2. Pick a way in: **Job link**, **Paste description**, or **Manual entry**.
+   - **Job link** — paste the posting URL. If the same posting is already tracked (ignoring tracking parameters and a trailing slash), knomad offers to open the existing application instead of creating a duplicate.
+   - **Paste description** — for pages that block readers. The link is optional but recommended: without it the application has no source link.
+   - **Manual entry** — company, role, optional link, applied date, and notes. This skips tailoring, works without a base resume, and is the path for referrals or applications you filed elsewhere.
+3. For a generated application, answer the short **Quick check** step: knomad points at requirements the posting stresses that your base resume doesn't obviously cover. Add a note only if it's true, choose **Use my answers**, or choose **Generate without answers**. Esc closes the whole flow without saving.
 4. knomad fetches the page, pulls out the company, role, and description, then produces:
    - a resume rewritten for that posting,
    - interview questions with talking points, questions to ask, and topics to review,
    - a tracker entry marked **Applied**.
-5. If the draft mentions dates, years, metrics, or company names that aren't in your profile or base resume, a **Before filing** screen lists each one. Choose **Edit answers and regenerate** to send new notes through the draft again, **Save this resume** if the detail is real, or **Discard &amp; start over**.
-6. The saved application opens as a full page so you can change status, add notes, schedule an interview, preview or download the resume, and practice the interview questions.
+5. If the draft mentions dates, years, metrics, or company names that aren't in your profile or base resume, a **Before filing** screen lists each one, shows the source link so you can reopen the posting while you check, and previews the drafted resume. Choose **Edit answers and regenerate** to send new notes through the draft again, **Save this resume** if the detail is real, or **Discard &amp; start over**.
+6. The saved application opens as a full page so you can change stage, add notes, set a next step, fix the applied date, schedule an interview, preview or download the resume, and practice the interview questions. Use **Re-tailor** to regenerate the resume and cover letter from the saved description later.
 
-If the page blocks automated readers, open the *Paste the description* field and drop the text in. knomad uses it directly.
+If the page blocks automated readers, switch to **Paste description** and drop the text in. knomad uses it directly and keeps the link attached, so **Open posting** still works from the tracker and application page.
 
 ## Dashboard metrics
 
@@ -166,6 +169,34 @@ To make interview counts accurate, every status change is timestamped. Each appl
 
 The metrics are straightforward counts, not projections. With no applications the cards show zero; the charts stay empty until you add a job or finish something in Together.
 
+## Application stages
+
+Every application sits in one ordered pipeline stage. The detail-page selector groups them so the list stays short:
+
+| Group | Stages |
+|---|---|
+| Applied | Saved, Applied |
+| Interviewing | Recruiter screen, Interviewing, Take-home |
+| Offer | Offer, Negotiating, Accepted |
+| Closed | Rejected, Withdrawn |
+
+The four dashboard buckets (Applied, Interviewing, Offer, Rejected) still drive the metric cards, charts, and tracker filter, so the existing numbers keep working. Each granular stage folds into one bucket: Saved and Applied count as Applied, Recruiter screen and Take-home count as Interviewing, and Negotiating and Accepted count as Offer.
+
+When you change the stage, the app appends `{ status, stage, at }` to `statusHistory` and the tracker shows the new stage label. Applications saved before stages existed are read from their old status — `applied`, `interviewing`, `offer`, or `rejected` — and keep working without a migration step. A legacy `interviewing` record stays at the generic Interviewing stage rather than being promoted to a specific round.
+
+Each stage also has a soft aging threshold. The tracker shows how many days the application has been in its current stage and turns the line amber once it passes the threshold: Saved 3 days, Applied 10, Recruiter screen 4, Interviewing 7, Take-home 4, Offer 3, Negotiating 5. Closed stages (Accepted, Rejected, Withdrawn) never age. The same aging rule feeds **Needs attention** on the tracker and the dashboard digest, so a stalled application surfaces without a manual reminder.
+
+## Weekly digest
+
+The dashboard also has a **This week** card that pulls the week into one place. It covers the rolling last seven days and the next seven:
+
+- **Added this week** — applications filed in the last seven days.
+- **Moved forward** — application stage changes in the last seven days, with the new stage and date.
+- **Coming up** — interviews and reminders in the next seven days.
+- **Needs attention** — overdue next steps and applications that have sat in one stage past its aging threshold.
+
+Each row opens that application. If nothing changed, the card says so and suggests adding a job or setting a next step. The digest is generated entirely on this device from `statusHistory`, `nextAction`, `dateApplied`, and scheduled events; there are no emails, cron jobs, or background services.
+
 ## Daily read
 
 Below the metric cards, the dashboard shows today's Wiktionary **Word of the Day** and a Wikipedia **Article of the day**. Both come from keyless, browser-side Wikimedia APIs, so they work without a model or API key.
@@ -187,8 +218,6 @@ Article picks rotate by date, so the daily portal read changes every day even in
 
 ## Calendar and reminders
 
-## Calendar and reminders
-
 Every application can hold any number of scheduled events. Open an application from the dashboard or tracker, then use **Interviews & reminders** to add one:
 
 - **Type** — an interview or a plain reminder.
@@ -200,7 +229,7 @@ The **Calendar** page shows a Sunday-start month grid with a dot for each schedu
 
 Calendar items come from four places: application interviews/reminders, Together tasks with a due date, project target dates, and CRM contacts with a next follow-up. A task row opens the task, and its check button marks the task done in place; a follow-up row opens the contact.
 
-Each row's calendar icon opens Google Calendar with the title, time (or all-day date), and source already filled in. This is a one-way, per-click export: edits or deletions in knomad do not update the Google Calendar copy, so delete or reschedule it there too if plans change. Timed items are sent as one-hour blocks and use the browser's time zone.
+Each row's calendar icon opens Google Calendar with the title, time (or all-day date), and source already filled in. Each application-event row also has an **ICS** download, and **Export .ics** in the calendar header exports everything currently in view. These are one-way, per-click exports: edits or deletions in knomad do not update the copy elsewhere, so change it there too if plans change. Timed items are sent as one-hour blocks and use the browser's time zone.
 
 Reminders are checked while knomad is open:
 
@@ -208,6 +237,8 @@ Reminders are checked while knomad is open:
 - If you allow browser notifications in **Settings → Reminders**, you also get a system notification.
 - Reminders that came due while the page was closed fire on the next load, unless the event started more than 60 minutes ago.
 - Fired reminders are recorded under `knomad_notified` so the same reminder doesn't fire twice.
+
+To keep a reminder working while the tab is closed, use the **Add to Google Calendar** link or download the **.ics** file and import it into your calendar app.
 
 Browser notifications need a secure context (`https://` or `localhost`). On `file://` or when permission is blocked, knomad keeps working with in-app toasts.
 
@@ -342,11 +373,11 @@ If a generated resume has neither your name nor your email, knomad prepends the 
 
 Opening an application from the dashboard, tracker, or calendar goes to a full page rather than a modal. The page has three tabs:
 
-- **Overview** — status, applied date, posting link, notes, the job description used, and the interview/reminder scheduler.
-- **Resume** — the tailored resume rendered as a document, with copy, print, and PDF actions.
-- **Interview practice** — the step-by-step practice flow plus the generated interview brief.
+- **Overview** — stage, applied date, posting link, autosaved notes, the **Next step** with a due date, the collapsed job description used, and the interview/reminder scheduler.
+- **Resume** — the tailored resume rendered as a document, with copy, print, PDF, Word, and **Re-tailor** actions, plus the editable cover letter written for the same posting, with copy, PDF, and Word download.
+- **Interview practice** — the step-by-step practice flow.
 
-The back arrow returns to whichever page you came from (dashboard, tracker, or calendar). Changing status, saving notes, or adding an event rerenders the page without resetting the active tab or practice progress.
+The back arrow returns to whichever page you came from (dashboard, tracker, or calendar). Changing stage, editing notes, or adding an event rerenders the page without resetting the active tab or practice progress; notes and next-step fields save as you type and are only re-rendered when the field is not focused.
 
 ## Resume preview, print, and PDF
 
@@ -355,18 +386,33 @@ The back arrow returns to whichever page you came from (dashboard, tracker, or c
 - **Copy text** copies the raw tailored resume.
 - **Print** opens the browser print dialog. A dedicated print stylesheet strips the app chrome and prints only the resume document.
 - **Download PDF** builds a letter-size PDF with [jsPDF](https://github.com/parallax/jsPDF), bundled and loaded on demand. The filename combines your name, company, and role.
+- **Download Word** writes a Word-compatible `.doc` from the same document model, ready to open in Word or upload to Google Docs.
+- **Re-tailor** runs the tailoring again from the saved job description and your current profile, replacing the resume and cover letter after a confirmation. Notes, events, and practice answers stay.
 
 The `---` + `BASIC MODE NOTES` block from basic mode stays in storage but is hidden from both the preview and the PDF. If jsPDF cannot load (offline, or the chunk is blocked), knomad falls back to the print dialog so you still get a document.
 
+## Keyword coverage
+
+The **Resume** tab also shows a **Keyword coverage** card. It compares the saved job description and role against the tailored resume and your profile, then groups the posting terms it recognises:
+
+- **Covered** — the term already appears in the tailored resume.
+- **In profile only** — you list it in your profile or base resume, but the tailored resume leaves it out. These are the easiest wins.
+- **Missing** — the term appears nowhere, so add it only if it is true for you.
+
+Coverage is a local, case-insensitive word match over a built-in skills/tools/soft-skills list plus any skills you saved in your profile. It is **not** an ATS score: it cannot tell whether a term is used well, and it may miss skills that are not in the list. The `--- BASIC MODE NOTES` block is excluded, so basic mode does not inflate the result. Treat it as a checklist, not a grade.
+
 ## Interview practice
 
-The **Interview practice** tab pulls likely questions from the generated brief. It looks for a `LIKELY QUESTIONS` section and numbered questions such as `1. …`, using the `Talking point:` line under each as a hint. If the brief has fewer than six usable questions, knomad adds general questions built from the role and company.
+The **Interview practice** tab pulls likely questions drafted during tailoring. It looks for a `LIKELY QUESTIONS` section and numbered questions such as `1. …`, using the `Talking point:` line under each as a hint. If the drafted prep has fewer than six usable questions, knomad adds general questions built from the role and company.
 
-1. Read the question.
-2. Write the answer as you would say it out loud.
-3. Optionally open a hint.
-4. Move forward or back; answers save to `localStorage` as you type.
-5. On the last question, choose **Finish & score**.
+Each question is tagged **Behavioral**, **Motivation**, or **Technical** from its wording. Behavioral questions are the default and get the most guidance.
+
+1. Read the question and its type.
+2. Behavioral questions show a live **STAR checklist** (Situation, Task, Action, Result) that lights up as you type.
+3. Optionally open a hint or the **Model outline** — a plain skeleton with placeholders, never invented facts, to fill from your own experience.
+4. Choose **Start practice** to keep hints and outlines, or **Start mock interview** to hide them and lock the Back button so it feels like the real thing.
+5. Move forward; answers save to `localStorage` as you type.
+6. On the last question, choose **Finish & score**.
 
 Scoring is local and deterministic, not AI. Each answer is judged on:
 
@@ -380,7 +426,7 @@ Scoring is local and deterministic, not AI. Each answer is judged on:
 | Ownership | Clear "I did" statements |
 | Filler | Fewer "um," "like," "just," "basically" |
 
-The results screen shows an overall score, a per-question score, your answer, and 2–4 concrete suggestions. **Practice again** clears the answers and starts over. Answers, scores, and feedback are stored on the application in `interviewSession`.
+The results screen shows an overall signal, a per-question score, a compact rubric (Structure, Specifics, Ownership, Outcome), a likely follow-up question, your answer, and 2–4 concrete suggestions. **Practice again** clears the answers and starts over. Answers, scores, rubric, and feedback are stored on the application in `interviewSession`.
 
 ## Data and privacy
 
@@ -389,7 +435,7 @@ Stored under these `localStorage` keys:
 | Key | Contents |
 |---|---|
 | `knomad_profile` | Name, profile photo (data URL), contact details, links, summary, skills, resume text, file name, and archived file key. Also stores the daily read portal (`dailyPortal`). |
-| `knomad_applications` | Applications, statuses, status history, notes, tailored resumes, interview prep, job descriptions, scheduled interviews/reminders, and practice answers/scores |
+| `knomad_applications` | Applications, stages, statuses, status history, notes, next step and due date, tailored resumes, interview prep, job descriptions, clarifications, scheduled interviews/reminders, and practice answers/scores |
 | `knomad_gemini_key` | Your Gemini API key — device-local only, never synced |
 | `knomad_notified` | Reminder keys that have already fired, so they don't repeat |
 | `knomad_sync_clocks_<userId>` | Per-user last-write-wins timestamps |
@@ -412,14 +458,15 @@ Stored under these `localStorage` keys:
 
 ## Known limitations
 
-- **Job descriptions from LinkedIn and similar sites** often fail to load through readers; use the paste field.
-- **No job-description-only mode** — a URL is still required even when you paste the description.
+- **Job descriptions from LinkedIn and similar sites** often fail to load through readers; use the paste mode.
+- **A source link is recommended but optional** — paste and manual entries can be saved without a URL. Those rows show **No source link** and have no **Open posting** action.
 - **Company/role detection is heuristic** in basic mode. The model usually fixes it in AI mode, and you can rename fields only by editing the saved data.
-- **Resume output is rendered HTML and PDF**, but the underlying tailored resume is still plain text with no rich formatting controls.
-- **Interview scoring is heuristic** — it measures length, structure, specifics, and language, not the truth or quality of your experience. Treat the score as a practice prompt, not a verdict.
+- **Resume output is rendered HTML, PDF, and .doc**, but the underlying tailored resume is still plain text with no rich formatting controls.
+- **Interview scoring is a heuristic writing signal** — it measures length, structure, specifics, and language, not the truth or quality of your experience. Treat it as a practice prompt, not a verdict.
 - **PDF and resume-file parsing load on demand** — jsPDF, pdf.js, and JSZip are bundled as separate chunks and fetched the first time you use them. When that fails, knomad falls back to printing or asks you to paste text.
 - **Profile autofill is heuristic** — it can miss a name on unusual layouts or grab the wrong line. Review the filled fields before saving, and use the **Fill profile** button after editing resume text.
-- **Reminders require knomad to be open** — there is no background service worker. System notifications also need notification permission and a secure context.
+- **Reminders require knomad to be open** — there is no background service worker. Use **Add to Google Calendar** or the **.ics** download so a reminder still fires with the tab closed. System notifications also need notification permission and a secure context.
+- **A Next step date is tracked, not scheduled** — it sorts and marks the tracker, but only **Follow up in 7 days** (and scheduled events) put a date on the calendar.
 - **No recurring events** — each interview or reminder is a single date and time.
 - **No import** — backups can be exported but not restored in-app yet.
 - **Cloud sync is per document** — two devices editing the same application offline resolve by last write, not by field-level merge.

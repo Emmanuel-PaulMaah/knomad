@@ -55,6 +55,51 @@ const STATUS_LABEL = {
   rejected: 'Rejected'
 };
 
+// Granular pipeline. Each stage folds into one of the coarse STATUS buckets so
+// existing metrics, charts, and the tracker filter keep working, while the
+// application page and tracker can show the real position and how long it has
+// sat there.
+const PIPELINE_STAGES = [
+  { id: 'saved', label: 'Saved', bucket: 'applied', days: 3 },
+  { id: 'applied', label: 'Applied', bucket: 'applied', days: 10 },
+  { id: 'screening', label: 'Recruiter screen', bucket: 'interviewing', days: 4 },
+  { id: 'interviewing', label: 'Interviewing', bucket: 'interviewing', days: 7 },
+  { id: 'takehome', label: 'Take-home', bucket: 'interviewing', days: 4 },
+  { id: 'offer', label: 'Offer', bucket: 'offer', days: 3 },
+  { id: 'negotiating', label: 'Negotiating', bucket: 'offer', days: 5 },
+  { id: 'accepted', label: 'Accepted', bucket: 'offer', days: 0, terminal: true },
+  { id: 'rejected', label: 'Rejected', bucket: 'rejected', days: 0, terminal: true },
+  { id: 'withdrawn', label: 'Withdrawn', bucket: 'rejected', days: 0, terminal: true }
+];
+const STAGE_IDS = PIPELINE_STAGES.map((stage) => stage.id);
+const STAGE_BY_ID = {};
+PIPELINE_STAGES.forEach((stage) => { STAGE_BY_ID[stage.id] = stage; });
+const STAGE_LABEL = {};
+PIPELINE_STAGES.forEach((stage) => { STAGE_LABEL[stage.id] = stage.label; });
+
+function normalizeStage(value) {
+  if (STAGE_BY_ID[value]) return value;
+  // Legacy records only stored the coarse status.
+  if (value === 'interviewing' || value === 'offer' || value === 'rejected') return value;
+  return 'applied';
+}
+
+function stageById(value) {
+  return STAGE_BY_ID[normalizeStage(value)];
+}
+
+function stageBucket(value) {
+  return stageById(value).bucket;
+}
+
+function stageLabel(value) {
+  return stageById(value).label;
+}
+
+function historyStageKey(entry) {
+  return (entry && (entry.stage || entry.status)) || 'applied';
+}
+
 const REMINDER_LABELS = {
   0: 'At the time',
   15: '15 minutes before',
@@ -87,6 +132,28 @@ const SKILL_WORDS = [
   'project management', 'customer success', 'communication', 'leadership',
   'stakeholder management', 'a/b testing', 'analytics', 'photoshop', 'illustrator',
   'copywriting', 'email marketing', 'paid media', 'crm', 'marketing', 'seo'
+];
+
+// Extra terms for keyword coverage beyond the tailoring skill list. These are
+// still plain text matches, so the UI keeps calling them "posting terms" rather
+// than an ATS score.
+const COVERAGE_EXTRA_TERMS = [
+  'adobe', 'after effects', 'premiere', 'indesign', 'sketch', 'invision', 'miro',
+  'notion', 'slack', 'google analytics', 'google ads', 'facebook ads', 'content strategy',
+  'social media', 'public relations', 'branding', 'graphic design', 'video editing',
+  'motion graphics', 'accounting', 'bookkeeping', 'quickbooks', 'payroll', 'budgeting',
+  'forecasting', 'financial modeling', 'financial analysis', 'auditing', 'tax', 'compliance',
+  'operations', 'logistics', 'inventory', 'supply chain', 'procurement', 'recruiting',
+  'talent acquisition', 'onboarding', 'training', 'human resources',
+  'customer service', 'customer experience', 'account management', 'business development',
+  'sales', 'negotiation', 'reporting', 'documentation', 'presentations',
+  'problem solving', 'critical thinking', 'time management', 'attention to detail',
+  'collaboration', 'adaptability', 'mentoring', 'coaching', 'writing', 'editing',
+  'research', 'strategy', 'roadmap', 'kpi', 'okr', 'roi', 'b2b', 'b2c', 'saas',
+  'e-commerce', 'healthcare', 'education', 'fintech', 'marketing automation',
+  'responsive design', 'webpack', 'vite', 'jest', 'cypress', 'playwright', 'selenium',
+  'postman', 'swagger', 'microservices', 'serverless', 'devops', 'security', 'testing',
+  'qa', 'debugging', 'performance', 'usability testing', 'wireframing', 'user flows'
 ];
 
 function loadJSON(key, fallback) {
@@ -146,6 +213,7 @@ function normalizePractice(raw) {
 
   return {
     started: Boolean(raw.started),
+    mock: Boolean(raw.mock),
     answers,
     index: Number.isFinite(index) && index >= 0 ? Math.floor(index) : 0,
     completed: Boolean(raw.completed),
@@ -153,7 +221,14 @@ function normalizePractice(raw) {
     results: Array.isArray(raw.results)
       ? raw.results.map((result) => ({
           score: Number.isFinite(Number(result && result.score)) ? Math.round(Number(result.score)) : 0,
-          feedback: Array.isArray(result && result.feedback) ? result.feedback.map(String) : []
+          feedback: Array.isArray(result && result.feedback) ? result.feedback.map(String) : [],
+          rubric: Array.isArray(result && result.rubric)
+            ? result.rubric.map((entry) => ({
+                label: String((entry && entry.label) || ''),
+                value: Number.isFinite(Number(entry && entry.value)) ? Math.max(0, Math.round(Number(entry.value))) : 0,
+                max: Number.isFinite(Number(entry && entry.max)) ? Math.max(1, Math.round(Number(entry.max))) : 3
+              })).filter((entry) => entry.label)
+            : []
         }))
       : [],
     gradedAt: raw.gradedAt || null
@@ -200,16 +275,20 @@ function normalizePortalChoice(value) {
 function normalizeApplications(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((app) => {
-    const status = STATUS.includes(app.status) ? app.status : 'applied';
+    const stage = normalizeStage(app.stage || app.status);
+    const status = stageBucket(stage);
     const dateApplied = app.dateApplied || new Date().toISOString();
     const statusHistory = Array.isArray(app.statusHistory) && app.statusHistory.length
       ? app.statusHistory
-          .filter((entry) => entry && STATUS.includes(entry.status) && entry.at)
-          .map((entry) => ({ status: entry.status, at: entry.at }))
-      : [{ status, at: dateApplied }];
+          .filter((entry) => entry && entry.at && (STATUS.includes(entry.status) || STAGE_BY_ID[entry.stage]))
+          .map((entry) => {
+            const entryStage = STAGE_BY_ID[entry.stage] ? entry.stage : normalizeStage(entry.status);
+            return { status: stageBucket(entryStage), stage: entryStage, at: entry.at };
+          })
+      : [{ status, stage, at: dateApplied }];
 
-    if (!statusHistory.some((entry) => entry.status === status)) {
-      statusHistory.push({ status, at: dateApplied });
+    if (!statusHistory.some((entry) => entry.stage === stage)) {
+      statusHistory.push({ status, stage, at: dateApplied });
     }
     statusHistory.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
@@ -217,6 +296,7 @@ function normalizeApplications(raw) {
       id: app.id != null ? app.id : makeId(),
       company: app.company || 'Unknown company',
       position: app.position || 'Untitled role',
+      stage,
       status,
       url: app.url || '',
       notes: app.notes || '',
@@ -226,7 +306,11 @@ function normalizeApplications(raw) {
       interviewSession: normalizePractice(app.interviewSession),
       resume: app.resume || '',
       interviewPrep: app.interviewPrep || '',
-      jobDescription: app.jobDescription || ''
+      coverLetter: app.coverLetter || '',
+      jobDescription: app.jobDescription || '',
+      clarifications: app.clarifications || '',
+      nextAction: app.nextAction || '',
+      nextActionAt: app.nextActionAt || ''
     };
   });
 }
@@ -1159,6 +1243,128 @@ function googleCalendarLink(item) {
     'aria-label="Add to Google Calendar">' + googleCalendarIcon() + '</a>';
 }
 
+// ---------------------------------------------------------------- .ics export
+//
+// Google links cover the "add it to my calendar" case, but they need a click
+// per event and a working network. A local .ics file works in any calendar app
+// and survives a closed tab.
+
+function icsStamp(date) {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+}
+
+function icsDateStamp(date) {
+  return date.getFullYear() + pad2(date.getMonth() + 1) + pad2(date.getDate());
+}
+
+function icsEscape(text) {
+  return String(text == null ? '' : text)
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+function downloadIcsFile(filename, body) {
+  const blob = new Blob([body], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function eventIcsButton(event) {
+  return '<button class="event-ics" type="button" data-event-ics="' + escapeHtml(event.id) + '"' +
+    ' title="Download .ics" aria-label="Download calendar file">ICS</button>';
+}
+
+function downloadEventIcs(eventId) {
+  const entry = allEvents().find(({ event }) => String(event.id) === String(eventId));
+  if (!entry) return;
+
+  const { app, event } = entry;
+  const start = new Date(event.at);
+  if (Number.isNaN(start.getTime())) {
+    toast('That event has no valid date', 'error');
+    return;
+  }
+  const end = new Date(start.getTime() + 60 * 60000);
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//knomad//EN',
+    'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    'UID:' + icsEscape(event.id) + '@knomad',
+    'DTSTAMP:' + icsStamp(new Date()),
+    'DTSTART:' + icsStamp(start),
+    'DTEND:' + icsStamp(end),
+    'SUMMARY:' + icsEscape(eventTitle(event)),
+    'DESCRIPTION:' + icsEscape([
+      app.company || '',
+      eventKindLabel(event),
+      app.url || ''
+    ].filter(Boolean).join(' · ')),
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ];
+
+  const base = (app.company ? app.company + '-' : '') + (eventTitle(event) || 'knomad-event');
+  downloadIcsFile(slugifyFilename(base) + '.ics', lines.join('\r\n'));
+  toast('Calendar file downloaded');
+}
+
+function downloadCalendarIcs() {
+  const items = calendarVisibleItems()
+    .filter((item) => item && item.at && !Number.isNaN(new Date(item.at).getTime()));
+
+  if (!items.length) {
+    toast('No dated items to export', 'error');
+    return;
+  }
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//knomad//EN',
+    'CALSCALE:GREGORIAN'
+  ];
+
+  items.forEach((item) => {
+    lines.push('BEGIN:VEVENT');
+    lines.push('UID:' + icsEscape(String(item.key)) + '@knomad');
+    lines.push('DTSTAMP:' + icsStamp(new Date()));
+
+    if (item.allDay) {
+      const start = dayKey(new Date(item.at));
+      if (start) {
+        const next = new Date(start + 'T00:00:00');
+        next.setDate(next.getDate() + 1);
+        lines.push('DTSTART;VALUE=DATE:' + start.replace(/-/g, ''));
+        lines.push('DTEND;VALUE=DATE:' + dayKey(next).replace(/-/g, ''));
+      }
+    } else {
+      const start = new Date(item.at);
+      const end = new Date(start.getTime() + 60 * 60000);
+      lines.push('DTSTART:' + icsStamp(start));
+      lines.push('DTEND:' + icsStamp(end));
+    }
+
+    lines.push('SUMMARY:' + icsEscape(item.title));
+    lines.push('DESCRIPTION:' + icsEscape(calendarSourceLabel(item)));
+    lines.push('END:VEVENT');
+  });
+
+  lines.push('END:VCALENDAR');
+  downloadIcsFile('knomad-calendar.ics', lines.join('\r\n'));
+  toast(items.length + (items.length === 1 ? ' item exported to .ics' : ' items exported to .ics'));
+}
+
 function allEvents() {
   return state.applications
     .reduce((list, app) => {
@@ -1339,6 +1545,7 @@ function renderDashboard() {
   if (dashStatus) renderStatusChart(applications);
   renderUpcoming();
   renderTogetherDash();
+  renderWeeklyDigest();
   renderRecent(applications);
   renderDailyRead();
 
@@ -1644,6 +1851,106 @@ function renderStatusChart(applications) {
   }
 }
 
+function attentionReason(application) {
+  if (application.nextActionAt) {
+    const due = new Date(application.nextActionAt).getTime();
+    if (Number.isFinite(due) && due < Date.now()) {
+      return 'Overdue: ' + (application.nextAction || 'next step') + ' · ' + formatDate(application.nextActionAt);
+    }
+  }
+  const applied = new Date(application.dateApplied).getTime();
+  if (Number.isFinite(applied) && Date.now() - applied >= 14 * DAY_MS) {
+    return 'No movement since ' + formatDate(application.dateApplied);
+  }
+  return 'Needs a next step';
+}
+
+function digestItemHtml(application, primary, secondary) {
+  return '<button class="digest-item" type="button" data-view="' + escapeHtml(application.id) + '">' +
+    '<span class="cell-main">' + escapeHtml(primary) + '</span>' +
+    (secondary ? '<span class="cell-sub">' + escapeHtml(secondary) + '</span>' : '') +
+  '</button>';
+}
+
+function digestSectionHtml(title, count, itemsHtml) {
+  if (!count) return '';
+  return '<div class="digest-section">' +
+    '<div class="digest-section-head">' +
+      '<span>' + escapeHtml(title) + '</span>' +
+      '<span class="coverage-count">' + count + '</span>' +
+    '</div>' +
+    '<div class="digest-items">' + itemsHtml + '</div>' +
+  '</div>';
+}
+
+function renderWeeklyDigest() {
+  const host = $('#weeklyDigest');
+  if (!host) return;
+
+  const now = Date.now();
+  const weekAgo = now - 7 * DAY_MS;
+  const weekAhead = now + 7 * DAY_MS;
+  const applications = state.applications;
+
+  const added = [];
+  const moved = [];
+  const upcoming = [];
+  const attention = [];
+
+  applications.forEach((application) => {
+    const appliedAt = new Date(application.dateApplied).getTime();
+    if (Number.isFinite(appliedAt) && appliedAt >= weekAgo) added.push(application);
+
+    const history = statusHistoryOf(application);
+    const latest = history[history.length - 1];
+    const previous = history.length > 1 ? history[history.length - 2] : null;
+    if (latest && previous && historyStageKey(latest) !== historyStageKey(previous)) {
+      const at = new Date(latest.at).getTime();
+      if (Number.isFinite(at) && at >= weekAgo) moved.push({ application, entry: latest });
+    }
+
+    if (needsAttention(application)) attention.push(application);
+
+    (application.events || []).forEach((event) => {
+      const at = new Date(event.at).getTime();
+      if (Number.isFinite(at) && at >= now && at <= weekAhead) upcoming.push({ application, event });
+    });
+  });
+
+  upcoming.sort((a, b) => new Date(a.event.at).getTime() - new Date(b.event.at).getTime());
+  attention.sort((a, b) => applicationDueTime(a) - applicationDueTime(b));
+  moved.sort((a, b) => new Date(b.entry.at).getTime() - new Date(a.entry.at).getTime());
+
+  const meta = $('#weeklyDigestRange');
+  if (meta) {
+    meta.textContent = formatDate(new Date(weekAgo).toISOString()) + ' – ' + formatDate(new Date(now).toISOString());
+  }
+
+  const body = [
+    digestSectionHtml('Added this week', added.length,
+      added.slice(0, 3).map((application) =>
+        digestItemHtml(application, application.company || 'Unknown company', application.position || '')).join('')),
+    digestSectionHtml('Moved forward', moved.length,
+      moved.slice(0, 3).map(({ application, entry }) =>
+        digestItemHtml(application, application.company || 'Unknown company',
+          (STAGE_LABEL[entry.stage] || STATUS_LABEL[entry.status] || entry.status) + ' · ' + formatDate(entry.at))).join('')),
+    digestSectionHtml('Coming up', upcoming.length,
+      upcoming.slice(0, 3).map(({ application, event }) =>
+        digestItemHtml(application, application.company || 'Unknown company',
+          eventTitle(event) + ' · ' + formatDate(event.at))).join('')),
+    digestSectionHtml('Needs attention', attention.length,
+      attention.slice(0, 3).map((application) =>
+        digestItemHtml(application, application.company || 'Unknown company', attentionReason(application))).join(''))
+  ].filter(Boolean).join('');
+
+  if (!body) {
+    host.innerHTML = '<div class="empty-state">Nothing changed this week. Add a job, set a next step, or schedule a follow-up to keep things moving.</div>';
+    return;
+  }
+
+  host.innerHTML = body;
+}
+
 function renderRecent(applications) {
   const host = $('#recentList');
   if (!host) return;
@@ -1659,15 +1966,22 @@ function renderRecent(applications) {
 
   const recent = applications.slice(0, 5);
   host.innerHTML = recent.map((app, index) => {
-    return '<button class="recent-row" data-view="' + escapeHtml(app.id) + '">' +
+    const posting = app.url
+      ? '<a class="recent-posting" href="' + escapeHtml(app.url) + '" target="_blank" rel="noopener noreferrer"' +
+        ' title="Open posting" aria-label="Open posting at ' + escapeHtml(hostnameOf(app.url)) + '">↗</a>'
+      : '';
+    return '<div class="recent-row">' +
+      '<button type="button" class="recent-open" data-view="' + escapeHtml(app.id) + '">' +
       '<span class="recent-no">' + String(index + 1).padStart(2, '0') + '</span>' +
       '<span class="recent-main">' +
       '<strong>' + escapeHtml(app.company) + '</strong>' +
       '<span>' + escapeHtml(app.position) + '</span>' +
       '</span>' +
-      statusBadge(app.status) +
+      '</button>' +
+      statusBadge(app.stage || app.status) +
+      posting +
       '<span class="recent-date">' + escapeHtml(formatDate(app.dateApplied)) + '</span>' +
-      '</button>';
+      '</div>';
   }).join('');
 }
 
@@ -2130,11 +2444,84 @@ function refreshDashboardSpace() {
   refreshDashboardInsights();
 }
 
-function statusBadge(status) {
-  return '<span class="badge ' + escapeHtml(status) + '">' + STATUS_LABEL[status] + '</span>';
+function statusBadge(value) {
+  const stage = stageById(value);
+  return '<span class="badge ' + escapeHtml(stage.bucket) + '" title="' + escapeHtml(stage.label) + '">' +
+    escapeHtml(stage.label) + '</span>';
 }
 
 // ---------------------------------------------------------------- Tracker
+
+function nextFutureEvent(application) {
+  const now = Date.now();
+  return (application.events || [])
+    .filter((event) => event && Number.isFinite(new Date(event.at).getTime()))
+    .filter((event) => new Date(event.at).getTime() >= now)
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())[0];
+}
+
+function applicationDueTime(application) {
+  if (application.nextActionAt) {
+    const due = new Date(application.nextActionAt).getTime();
+    if (Number.isFinite(due)) return due;
+  }
+  const upcoming = nextFutureEvent(application);
+  return upcoming ? new Date(upcoming.at).getTime() : Infinity;
+}
+
+function stageAgeInfo(application) {
+  const stage = stageById(application.stage || application.status);
+  const history = statusHistoryOf(application);
+  const since = history.reduce((max, entry) => {
+    const at = new Date(entry.at).getTime();
+    return Number.isFinite(at) && at > max ? at : max;
+  }, -Infinity);
+  const sinceAt = Number.isFinite(since) ? since : new Date(application.dateApplied).getTime();
+  const days = Number.isFinite(sinceAt) ? Math.max(0, Math.floor((Date.now() - sinceAt) / DAY_MS)) : 0;
+  return { stage, days, stale: stage.days > 0 && days > stage.days };
+}
+
+function needsAttention(application) {
+  const stage = stageById(application.stage || application.status);
+  if (stage.terminal) return false;
+
+  const due = application.nextActionAt ? new Date(application.nextActionAt).getTime() : NaN;
+  if (Number.isFinite(due) && due < Date.now()) return true;
+
+  if (application.nextActionAt) return false;
+  return stageAgeInfo(application).stale;
+}
+
+function stageAgeSubHtml(application) {
+  const info = stageAgeInfo(application);
+  if (!info.stage || info.stage.terminal) return '';
+  return '<span class="cell-sub' + (info.stale ? ' cell-warn' : '') + '">' +
+    info.days + (info.days === 1 ? ' day' : ' days') + ' in stage</span>';
+}
+
+function nextStepCellHtml(application) {
+  const parts = [];
+
+  if (application.nextAction) {
+    parts.push('<span class="cell-main">' + escapeHtml(application.nextAction) + '</span>');
+    if (application.nextActionAt) {
+      const overdue = new Date(application.nextActionAt).getTime() < Date.now();
+      parts.push('<span class="cell-sub' + (overdue ? ' cell-warn' : '') + '">' +
+        (overdue ? 'Overdue · ' : 'Due ') +
+        escapeHtml(formatDate(application.nextActionAt)) + '</span>');
+    }
+    return parts.join('');
+  }
+
+  const upcoming = nextFutureEvent(application);
+  if (upcoming) {
+    return '<span class="cell-main cell-muted">Next event</span>' +
+      '<span class="cell-sub">' +
+      escapeHtml(formatDate(upcoming.at) + ' · ' + eventTitle(upcoming)) + '</span>';
+  }
+
+  return '<span class="cell-sub">—</span>';
+}
 
 function renderTracker() {
   const body = $('#appTableBody');
@@ -2142,6 +2529,7 @@ function renderTracker() {
 
   const term = ($('#searchInput') ? $('#searchInput').value : '').toLowerCase().trim();
   const status = $('#statusFilter') ? $('#statusFilter').value : 'all';
+  const sort = $('#trackerSort') ? $('#trackerSort').value : 'newest';
 
   const filtered = state.applications.filter((app) => {
     if (status !== 'all' && app.status !== status) return false;
@@ -2149,19 +2537,36 @@ function renderTracker() {
     return (app.company + ' ' + app.position + ' ' + app.notes).toLowerCase().includes(term);
   });
 
+  filtered.sort((a, b) => {
+    if (sort === 'oldest') return new Date(a.dateApplied).getTime() - new Date(b.dateApplied).getTime();
+    if (sort === 'company') return a.company.localeCompare(b.company);
+    if (sort === 'due') return applicationDueTime(a) - applicationDueTime(b);
+    if (sort === 'attention') {
+      const rankA = needsAttention(a) ? 0 : 1;
+      const rankB = needsAttention(b) ? 0 : 1;
+      if (rankA !== rankB) return rankA - rankB;
+      return applicationDueTime(a) - applicationDueTime(b);
+    }
+    return new Date(b.dateApplied).getTime() - new Date(a.dateApplied).getTime();
+  });
+
   const countEl = $('#trackerCount');
   if (countEl) {
     const total = state.applications.length;
-    countEl.textContent = filtered.length === total
+    const attention = filtered.filter(needsAttention).length;
+    const base = filtered.length === total
       ? total + ' tracked'
       : filtered.length + ' of ' + total + ' shown';
+    countEl.textContent = attention
+      ? base + ' · ' + attention + ' need attention'
+      : base;
   }
 
   if (!filtered.length) {
     const message = state.applications.length
       ? 'No applications match these filters'
       : 'Nothing tracked yet — add a job to start';
-    body.innerHTML = '<tr><td colspan="5"><div class="empty-state">' +
+    body.innerHTML = '<tr><td colspan="6"><div class="empty-state">' +
       escapeHtml(message) +
       (state.applications.length ? '' : ' <br><br><button class="btn subtle small" data-action="add-job">+ Add a job</button>') +
       '</div></td></tr>';
@@ -2169,14 +2574,21 @@ function renderTracker() {
   }
 
   body.innerHTML = filtered.map((app) => {
+    const source = app.url
+      ? '<a class="cell-sub cell-link" href="' + escapeHtml(app.url) + '" target="_blank" rel="noopener noreferrer"' +
+        ' title="Open posting">' + escapeHtml(hostnameOf(app.url)) + ' ↗</a>'
+      : '<span class="cell-sub">No source link</span>';
     return '<tr>' +
-      '<td><span class="cell-main">' + escapeHtml(app.company) + '</span>' +
-      (app.url ? '<span class="cell-sub">' + escapeHtml(hostnameOf(app.url)) + '</span>' : '') + '</td>' +
+      '<td><span class="cell-main">' + escapeHtml(app.company) + '</span>' + source + '</td>' +
       '<td><span class="cell-main">' + escapeHtml(app.position) + '</span>' +
       (app.notes ? '<span class="cell-sub">' + escapeHtml(app.notes) + '</span>' : '') + '</td>' +
-      '<td>' + statusBadge(app.status) + '</td>' +
+      '<td>' + statusBadge(app.stage || app.status) + stageAgeSubHtml(app) + '</td>' +
       '<td><span class="cell-sub">' + escapeHtml(formatDate(app.dateApplied)) + '</span></td>' +
+      '<td>' + nextStepCellHtml(app) + '</td>' +
       '<td><div class="row-actions">' +
+      (app.url
+        ? '<a class="btn ghost small" href="' + escapeHtml(app.url) + '" target="_blank" rel="noopener noreferrer">Open posting ↗</a>'
+        : '') +
       '<button class="btn ghost small" data-view="' + escapeHtml(app.id) + '">View</button>' +
       '<button class="btn ghost small quiet-danger" data-delete="' + escapeHtml(app.id) + '">Delete</button>' +
       '</div></td>' +
@@ -2584,6 +2996,7 @@ function eventRowHtml(app, event, options = {}) {
     '<span>' + escapeHtml(sub) + '</span>' +
     '</span>' +
     gcal +
+    eventIcsButton(event) +
     '<button class="event-del" type="button" data-event-del="' + escapeHtml(event.id) + '" title="Remove event" aria-label="Remove event">×</button>' +
     '</div>';
 }
@@ -3590,7 +4003,7 @@ function confirmAction(options = {}) {
   const accept = $('#confirmAcceptBtn');
   if (accept) {
     accept.textContent = options.confirmLabel || (danger ? 'Delete' : 'Confirm');
-    accept.className = 'btn ' + (danger ? 'danger' : 'primary');
+    accept.className = 'btn ' + (options.confirmTone || (danger ? 'danger' : 'primary'));
   }
 
   openModal(modal);
@@ -3601,15 +4014,66 @@ function confirmAction(options = {}) {
 
 let currentDetailId = null;
 let addJobPrefill = null;
+let addJobMode = 'link';
+
+// Marketing and referrer params do not change which posting a link points at.
+// Strip them, along with the hash and a trailing slash, so the same job added
+// twice is recognized instead of silently duplicating the application.
+const POSTING_TRACKING_PARAMS = /^(utm_.+|gclid|fbclid|msclkid|mc_cid|mc_eid|igshid|_hsenc|_hsmi|ref|ref_src|trk|gh_src)$/i;
+
+function normalizePostingUrl(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl || '').trim());
+    if (!/^https?:$/.test(url.protocol)) return '';
+    url.hash = '';
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+
+    const drop = [];
+    url.searchParams.forEach((value, key) => {
+      if (POSTING_TRACKING_PARAMS.test(key)) drop.push(key);
+    });
+    drop.forEach((key) => url.searchParams.delete(key));
+
+    const path = url.pathname.replace(/\/+$/, '');
+    url.pathname = path || '/';
+    return url.toString().replace(/\/$/, '');
+  } catch (err) {
+    return '';
+  }
+}
+
+function findDuplicateApplication(rawUrl) {
+  const target = normalizePostingUrl(rawUrl);
+  if (!target) return null;
+  return state.applications.find((app) => normalizePostingUrl(app.url) === target) || null;
+}
+
+function setAddJobMode(mode) {
+  const next = ['link', 'paste', 'manual'].includes(mode) ? mode : 'link';
+  addJobMode = next;
+
+  $$('#addJobForm [data-add-mode]').forEach((button) => {
+    const active = button.dataset.addMode === next;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  $$('#addJobForm [data-add-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.addPanel !== next;
+  });
+
+  const submit = $('#addJobSubmitBtn');
+  if (submit) {
+    submit.textContent = next === 'manual'
+      ? 'Save application'
+      : next === 'paste'
+        ? 'Tailor & save'
+        : 'Fetch & tailor';
+  }
+  const url = $('#jobUrl');
+  if (url) url.required = next === 'link';
+}
 
 function openAddJob(prefill) {
-  if (!state.profile.resumeText) {
-    toast('Add your resume first, then knomad can tailor it.', 'error');
-    showPage('profile');
-    const field = $('#profileResumeText');
-    if (field) setTimeout(() => field.focus(), 200);
-    return;
-  }
   resetAddJob();
 
   const seed = prefill && typeof prefill === 'object' && prefill.url ? prefill : null;
@@ -3620,14 +4084,20 @@ function openAddJob(prefill) {
       position: seed.position || '',
       description: seed.description || ''
     };
-    const urlInput = $('#jobUrl');
-    if (urlInput) urlInput.value = addJobPrefill.url;
-    const pasteInput = $('#jobPaste');
-    if (pasteInput && addJobPrefill.description) {
-      pasteInput.value = addJobPrefill.description;
-      const details = pasteInput.closest('details');
-      if (details) details.open = true;
+    if (addJobPrefill.description) {
+      setAddJobMode('paste');
+      const pasteUrl = $('#jobPasteUrl');
+      if (pasteUrl) pasteUrl.value = addJobPrefill.url;
+      const pasteInput = $('#jobPaste');
+      if (pasteInput) pasteInput.value = addJobPrefill.description;
+    } else {
+      setAddJobMode('link');
+      const urlInput = $('#jobUrl');
+      if (urlInput) urlInput.value = addJobPrefill.url;
     }
+  } else {
+    // Manual entry is always available, even before a base resume exists.
+    setAddJobMode(state.profile.resumeText ? 'link' : 'manual');
   }
 
   openModal($('#addJobModal'));
@@ -3637,6 +4107,7 @@ function resetAddJob() {
   addJobPrefill = null;
   verifySession = null;
   questionsResolver = null;
+  addJobMode = 'link';
   const form = $('#addJobForm');
   if (form) form.reset();
   const wrap = $('#addJobFormWrap');
@@ -3661,6 +4132,113 @@ function resetAddJob() {
     const note = item.querySelector('.step-note');
     if (note) note.textContent = '';
   });
+
+  setAddJobMode('link');
+  const manualDate = $('#manualDate');
+  if (manualDate) manualDate.value = dayKey(new Date());
+}
+
+function usePastedDescription() {
+  const url = $('#jobUrl') ? $('#jobUrl').value.trim() : '';
+  resetAddJob();
+  setAddJobMode('paste');
+  const pasteUrl = $('#jobPasteUrl');
+  if (pasteUrl && url) pasteUrl.value = url;
+  const pasteInput = $('#jobPaste');
+  if (pasteInput) setTimeout(() => pasteInput.focus(), 60);
+}
+
+function readPostingUrl(inputId) {
+  const field = $(inputId);
+  const raw = field ? field.value.trim() : '';
+  if (!raw) return '';
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (err) {
+    toast('Enter a full job link, including https://', 'error');
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol)) {
+    toast('Only http and https links are supported', 'error');
+    return null;
+  }
+  return raw;
+}
+
+async function confirmDuplicateLink(rawUrl) {
+  const duplicate = findDuplicateApplication(rawUrl);
+  if (!duplicate) return true;
+
+  const addAgain = await confirmAction({
+    tone: 'neutral',
+    title: 'Already in your tracker',
+    message: (duplicate.company || 'This posting') + ' — ' + (duplicate.position || 'saved application') +
+      ' is already tracked from this link. Open it so your notes, prep, and events stay together, or add it again for a separate opening.',
+    cancelLabel: 'Open existing',
+    confirmLabel: 'Add again',
+    confirmTone: 'ghost'
+  });
+  if (!addAgain) {
+    closeModal($('#addJobModal'));
+    resetAddJob();
+    openDetail(duplicate.id);
+    return false;
+  }
+  return true;
+}
+
+async function saveManualApplication() {
+  const companyField = $('#manualCompany');
+  const positionField = $('#manualPosition');
+  const company = companyField ? companyField.value.trim() : '';
+  const position = positionField ? positionField.value.trim() : '';
+
+  if (!company && !position) {
+    toast('Add a company or role first', 'error');
+    return;
+  }
+
+  const rawUrl = readPostingUrl('#manualUrl');
+  if (rawUrl === null) return;
+  if (rawUrl && !(await confirmDuplicateLink(rawUrl))) return;
+
+  const dateField = $('#manualDate');
+  const dateValue = dateField ? dateField.value : '';
+  const applied = dateValue ? new Date(dateValue + 'T12:00:00') : new Date();
+  const iso = Number.isNaN(applied.getTime()) ? new Date().toISOString() : applied.toISOString();
+  const notesField = $('#manualNotes');
+
+  const application = {
+    id: makeId(),
+    company: company || 'Unknown company',
+    position: position || 'Untitled role',
+    stage: 'applied',
+    status: 'applied',
+    url: rawUrl,
+    notes: notesField ? notesField.value.trim() : '',
+    dateApplied: iso,
+    statusHistory: [{ status: 'applied', stage: 'applied', at: iso }],
+    events: [],
+    interviewSession: emptyPractice(),
+    resume: '',
+    interviewPrep: '',
+    coverLetter: '',
+    jobDescription: '',
+    clarifications: '',
+    nextAction: '',
+    nextActionAt: ''
+  };
+
+  state.applications.unshift(application);
+  saveApplications();
+  renderDashboard();
+  renderTracker();
+  closeModal($('#addJobModal'));
+  openDetail(application.id);
+  resetAddJob();
+  toast('Application added — no resume generated');
 }
 
 function setStep(key, status, note) {
@@ -3684,32 +4262,39 @@ function failRunningStep() {
 async function handleAddJobSubmit(event) {
   event.preventDefault();
 
-  const urlInput = $('#jobUrl');
-  const pasteInput = $('#jobPaste');
-  const rawUrl = urlInput.value.trim();
-  const pasted = pasteInput.value.trim();
+  if (addJobMode === 'manual') {
+    await saveManualApplication();
+    return;
+  }
 
-  let parsed;
-  try {
-    parsed = new URL(rawUrl);
-  } catch (err) {
+  const rawUrl = addJobMode === 'paste'
+    ? readPostingUrl('#jobPasteUrl')
+    : readPostingUrl('#jobUrl');
+  if (rawUrl === null) return;
+
+  const pasteField = $('#jobPaste');
+  const pasted = addJobMode === 'paste' && pasteField ? pasteField.value.trim() : '';
+
+  if (addJobMode === 'link' && !rawUrl) {
     toast('Enter a full job link, including https://', 'error');
     return;
   }
-  if (!/^https?:$/.test(parsed.protocol)) {
-    toast('Only http and https links are supported', 'error');
+  if (addJobMode === 'paste' && !pasted) {
+    toast('Paste the job description first', 'error');
     return;
   }
 
   if (!state.profile.resumeText) {
-    toast('Add your resume first', 'error');
+    toast('Add your resume first, then knomad can tailor it', 'error');
     return;
   }
+
+  if (rawUrl && !(await confirmDuplicateLink(rawUrl))) return;
 
   $('#addJobFormWrap').hidden = true;
   $('#jobProgress').hidden = false;
   $('#jobError').hidden = true;
-  $('#progressUrl').textContent = rawUrl;
+  $('#progressUrl').textContent = rawUrl || 'Pasted description';
 
   let page = null;
   let job = null;
@@ -3817,6 +4402,19 @@ function showVerifyScreen(pack, job, flagged, rawUrl, clarifications) {
     ' that ' + (flagged.length === 1 ? 'mentions details' : 'mention details') +
     ' not obviously in your profile, base resume, or your notes. Check them before saving.';
 
+  const sourceLink = $('#verifySourceLink');
+  if (sourceLink) {
+    sourceLink.href = rawUrl || '#';
+    sourceLink.hidden = !rawUrl;
+    const sourceRow = sourceLink.closest('.verify-source');
+    if (sourceRow) sourceRow.hidden = !rawUrl;
+  }
+  const sourceHost = $('#verifySourceHost');
+  if (sourceHost) sourceHost.textContent = rawUrl ? hostnameOf(rawUrl) : '';
+
+  const preview = $('#verifyResumePreview');
+  if (preview) preview.textContent = (pack.resume || '').trim() || 'No resume was generated.';
+
   const whyFor = {
     date: 'A date here is not traceable to your profile, base resume, or your notes — it could be a year, month, or range the generator inferred from the posting.',
     year: 'A year here is not traceable to your profile, base resume, or your notes — only your real employment dates should appear on the tailored resume.',
@@ -3911,17 +4509,21 @@ async function saveApplication(pack, job, rawUrl, clarifications) {
     id: makeId(),
     company: pack.company || job.company || 'Unknown company',
     position: pack.position || job.position || 'Untitled role',
+    stage: 'applied',
     status: 'applied',
     url: rawUrl,
     notes: '',
     dateApplied: now,
-    statusHistory: [{ status: 'applied', at: now }],
+    statusHistory: [{ status: 'applied', stage: 'applied', at: now }],
     events: [],
     interviewSession: emptyPractice(),
     resume: pack.resume || '',
     interviewPrep: pack.interviewPrep || '',
+    coverLetter: pack.coverLetter || '',
     jobDescription: job.description || '',
-    clarifications: clarifications || ''
+    clarifications: clarifications || '',
+    nextAction: '',
+    nextActionAt: ''
   };
 
   state.applications.unshift(application);
@@ -4434,6 +5036,7 @@ function buildPrompt(job, clarifications) {
     '- Open the resume with this exact header block, copied verbatim as the first lines. Never alter spelling, email, phone, or links:',
     header || '(no profile header available)',
     '- Keep the whole resume short enough to fit one page. Lead with the experience most relevant to the role; keep bullets tight.',
+    '- The cover letter must be plain text with no markdown. Address it to "Dear Hiring Manager," unless the posting names a person. Write 3 short paragraphs: why this role and company, two or three concrete examples from the resume with outcomes, and a close that invites a conversation. Keep it under 250 words and sign off with the candidate’s name from the header. Never repeat the resume verbatim and never invent facts.',
     '- Interview prep must be plain text with three sections in this order: LIKELY QUESTIONS, QUESTIONS TO ASK, TOPICS TO REVIEW.',
     '- Under LIKELY QUESTIONS, write exactly 6 numbered questions in the form "1. Question?" and put a "Talking point: ..." line under each one.',
     '- Under QUESTIONS TO ASK, write 3 numbered questions. Under TOPICS TO REVIEW, write 5 bullet points starting with "- ".',
@@ -4443,7 +5046,7 @@ function buildPrompt(job, clarifications) {
     ...jobBlock,
     '',
     'Return ONLY valid JSON in this exact shape:',
-    '{"company":"","position":"","resume":"","interviewPrep":""}',
+    '{"company":"","position":"","resume":"","interviewPrep":"","coverLetter":""}',
     'If the company or role is unclear, infer the most likely answer from the posting.'
   ].join('\n');
 }
@@ -4471,7 +5074,8 @@ function parseJobPack(text, job) {
     company: String(parsed.company || job.company || 'Unknown company').trim(),
     position: String(parsed.position || job.position || 'Unknown role').trim(),
     resume: ensureResumeHeader(String(parsed.resume || '').trim(), state.profile),
-    interviewPrep: String(parsed.interviewPrep || '').trim()
+    interviewPrep: String(parsed.interviewPrep || '').trim(),
+    coverLetter: String(parsed.coverLetter || '').trim()
   };
 }
 
@@ -4641,7 +5245,8 @@ function fallbackPack(job) {
     company: job.company || 'Unknown company',
     position: job.position || 'Unknown role',
     resume: fallbackResume(profile, source, job, keywords, matched, missing),
-    interviewPrep: fallbackInterviewPrep(job, keywords, profile)
+    interviewPrep: fallbackInterviewPrep(job, keywords, profile),
+    coverLetter: fallbackCoverLetter(profile, job, matched)
   };
 }
 
@@ -4696,11 +5301,164 @@ function fallbackInterviewPrep(job, keywords, profile) {
   return lines.join('\n');
 }
 
+function fallbackCoverLetter(profile, job, matched) {
+  const company = job.company || 'your team';
+  const role = job.position || 'this role';
+  const strengths = (matched.length ? matched : (profile.skills || [])).slice(0, 5);
+  const summary = String(profile.summary || '').trim().replace(/[.!?]+$/, '');
+
+  const opening = 'I’m applying for the ' + role + ' role at ' + company + '.' +
+    (summary ? ' ' + summary + '.' : '');
+
+  const middle = strengths.length
+    ? 'The work already on my resume lines up with what the posting asks for: ' + strengths.join(', ') + '. I can walk through a concrete example of each in a conversation.'
+    : 'My resume shows the work I have done that is closest to this role, and I would welcome the chance to go through the details with you.';
+
+  return [
+    'Dear Hiring Manager,',
+    '',
+    opening,
+    '',
+    middle,
+    '',
+    'I’d like to talk about how I can help ' + company + ' in this role. Thank you for your time and consideration.',
+    '',
+    'Sincerely,',
+    profile.name || ''
+  ].join('\n').trim();
+}
+
+// ---------------------------------------------------------------- Keyword coverage
+//
+// A local, deterministic read of how much of the posting shows up in the
+// tailored resume. It is a text match, not an ATS verdict: it shows which terms
+// are already there, which live only in your profile, and which are absent, so
+// you can add the true ones on purpose.
+
+const COVERAGE_TERMS = Array.from(new Set(SKILL_WORDS.concat(COVERAGE_EXTRA_TERMS)));
+
+function coverageResumeBody(resume) {
+  return String(resume || '').split(/BASIC MODE NOTES/i)[0];
+}
+
+function hasCoverageTerm(haystack, term) {
+  const text = String(haystack || '').toLowerCase();
+  const needle = String(term || '').toLowerCase().trim();
+  if (!text || !needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp('(^|[^a-z0-9+#])' + escaped + '($|[^a-z0-9+#])', 'i');
+  return pattern.test(text);
+}
+
+function coverageTermLabel(term) {
+  if (SKILL_CASE[term]) return SKILL_CASE[term];
+  return String(term || '').replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+}
+
+function analyzeKeywordCoverage(application) {
+  if (!application) return null;
+  if (!String(application.jobDescription || '').trim()) return null;
+
+  const posting = String(application.jobDescription || '') + ' ' + String(application.position || '');
+  const profile = state.profile || {};
+  const profileText = [
+    profile.headline || '',
+    profile.summary || '',
+    Array.isArray(profile.skills) ? profile.skills.join(' ') : '',
+    profile.resumeText || ''
+  ].join(' ');
+  const custom = (Array.isArray(profile.skills) ? profile.skills : [])
+    .map((word) => String(word || '').toLowerCase().trim())
+    .filter(Boolean);
+
+  const terms = Array.from(new Set(COVERAGE_TERMS.concat(custom)))
+    .filter((term) => hasCoverageTerm(posting, term));
+
+  if (!terms.length) return { items: [], covered: 0, profileOnly: 0, missing: 0, total: 0 };
+
+  const resumeBody = coverageResumeBody(application.resume);
+  const items = terms.map((term) => {
+    if (hasCoverageTerm(resumeBody, term)) {
+      return { term, label: coverageTermLabel(term), status: 'covered' };
+    }
+    if (hasCoverageTerm(profileText, term)) {
+      return { term, label: coverageTermLabel(term), status: 'profile' };
+    }
+    return { term, label: coverageTermLabel(term), status: 'missing' };
+  });
+
+  return {
+    items,
+    covered: items.filter((item) => item.status === 'covered').length,
+    profileOnly: items.filter((item) => item.status === 'profile').length,
+    missing: items.filter((item) => item.status === 'missing').length,
+    total: items.length
+  };
+}
+
+function coverageGroupHtml(label, tone, items, hint) {
+  if (!items.length) return '';
+  return '<div class="coverage-group">' +
+    '<div class="coverage-group-head">' +
+      '<span class="coverage-group-label">' + escapeHtml(label) +
+        ' <span class="coverage-count">' + items.length + '</span></span>' +
+      (hint ? '<span class="coverage-hint">' + escapeHtml(hint) + '</span>' : '') +
+    '</div>' +
+    '<div class="coverage-chips">' +
+      items.map((item) => '<span class="coverage-chip ' + tone + '">' +
+        escapeHtml(item.label) + '</span>').join('') +
+    '</div>' +
+  '</div>';
+}
+
+function renderKeywordCoverage(application) {
+  const card = $('#coverageCard');
+  if (!card) return;
+
+  const meta = $('#coverageMetaLine');
+  const bar = $('#coverageBar');
+  const groups = $('#coverageGroups');
+  const summary = analyzeKeywordCoverage(application);
+
+  if (!summary || !summary.total) {
+    if (meta) {
+      meta.textContent = summary
+        ? 'No built-in terms matched this posting — it may use different wording.'
+        : 'Save a job description to compare against.';
+    }
+    if (bar) bar.style.width = '0%';
+    if (groups) groups.innerHTML = '';
+    return;
+  }
+
+  const pct = Math.round((summary.covered / summary.total) * 100);
+  if (meta) {
+    meta.textContent = summary.covered + ' of ' + summary.total + ' posting terms in your tailored resume' +
+      (summary.profileOnly ? ' · ' + summary.profileOnly + ' more only in your profile' : '');
+  }
+  if (bar) {
+    bar.style.width = pct + '%';
+    bar.classList.toggle('is-low', pct < 40);
+    bar.classList.toggle('is-mid', pct >= 40 && pct < 70);
+  }
+
+  if (groups) {
+    const covered = summary.items.filter((item) => item.status === 'covered');
+    const profileOnly = summary.items.filter((item) => item.status === 'profile');
+    const missing = summary.items.filter((item) => item.status === 'missing');
+    groups.innerHTML =
+      coverageGroupHtml('Missing', 'missing', missing, 'Add only the ones that are true for you.') +
+      coverageGroupHtml('In profile only', 'weak', profileOnly, 'You have these — name them in the resume.') +
+      coverageGroupHtml('Covered', 'covered', covered, '');
+  }
+}
+
 // ---------------------------------------------------------------- Application page
 
 let applicationTab = 'overview';
 let renderedApplicationId = null;
 let practiceSaveTimer = null;
+let coverLetterSaveTimer = null;
 
 function openDetail(id) {
   const application = state.applications.find((app) => String(app.id) === String(id));
@@ -4726,12 +5484,41 @@ function renderApplication() {
 
   $('#detailCompany').textContent = application.company || 'Unknown company';
   $('#detailPosition').textContent = application.position || 'Untitled role';
-  $('#detailStatus').value = application.status;
-  $('#detailDate').textContent = 'Applied ' + (formatDate(application.dateApplied) || '—');
-  $('#detailNotes').value = application.notes || '';
+  $('#detailStatus').value = application.stage || application.status;
+
+  const stageAge = $('#detailStageAge');
+  if (stageAge) {
+    const info = stageAgeInfo(application);
+    stageAge.textContent = info.stage.terminal
+      ? info.stage.label + ' · closed'
+      : info.stage.label + ' · ' + info.days + (info.days === 1 ? ' day' : ' days') + ' in stage';
+    stageAge.classList.toggle('is-stale', info.stale);
+  }
+
+  const dateField = $('#detailAppliedDate');
+  if (dateField && document.activeElement !== dateField) {
+    dateField.value = application.dateApplied ? dayKey(new Date(application.dateApplied)) : '';
+  }
+
+  const notesField = $('#detailNotes');
+  if (notesField && document.activeElement !== notesField) notesField.value = application.notes || '';
+
+  const nextActionField = $('#detailNextAction');
+  if (nextActionField && document.activeElement !== nextActionField) {
+    nextActionField.value = application.nextAction || '';
+  }
+  const nextActionAtField = $('#detailNextActionAt');
+  if (nextActionAtField && document.activeElement !== nextActionAtField) {
+    nextActionAtField.value = application.nextActionAt ? dayKey(new Date(application.nextActionAt)) : '';
+  }
+
+  const notesSaved = $('#notesSaved');
+  if (notesSaved) notesSaved.textContent = '';
+  const nextSaved = $('#nextActionSaved');
+  if (nextSaved) nextSaved.textContent = '';
+
   $('#detailJD').textContent = application.jobDescription || 'No job description saved';
   $('#detailResume').textContent = application.resume || '';
-  $('#detailPrep').textContent = application.interviewPrep || 'No interview brief saved';
 
   const resumeMeta = $('#resumeMetaLine');
   if (resumeMeta) {
@@ -4739,6 +5526,12 @@ function renderApplication() {
       ? wordCount(application.resume) + ' words · tailored for ' + (application.position || 'this role') + (application.company ? ' at ' + application.company : '')
       : 'No tailored resume saved yet';
   }
+
+  const coverLetterField = $('#detailCoverLetter');
+  if (coverLetterField && document.activeElement !== coverLetterField) {
+    coverLetterField.value = String(application.coverLetter || '');
+  }
+  syncCoverLetterChrome(application);
 
   const link = $('#detailLink');
   if (application.url) {
@@ -4760,6 +5553,7 @@ function renderApplication() {
 
   renderDetailEvents();
   renderResumePreview(application.resume);
+  renderKeywordCoverage(application);
   setApplicationTab(applicationTab);
 }
 
@@ -5210,6 +6004,373 @@ function printResume() {
   setTimeout(() => window.print(), 60);
 }
 
+function resumeWordHtml(application) {
+  const model = parseResumeDocument(application.resume);
+  const name = model.header.name || state.profile.name || 'Resume';
+  const headline = model.header.headline || state.profile.headline || '';
+  const contact = model.header.contact.length ? model.header.contact : resumeContactFallback();
+
+  const parts = [
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+      'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
+    '<head><meta charset="utf-8"><title>' + escapeHtml(name) + '</title>',
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111;margin:48px;line-height:1.4}' +
+      'h1{font-size:22pt;margin:0 0 2px}h2{font-size:11pt;text-transform:uppercase;letter-spacing:.06em;' +
+      'border-bottom:1px solid #999;margin:18px 0 8px;padding-bottom:3px}p{margin:4px 0}' +
+      'ul{margin:4px 0 4px 22px}li{margin:2px 0}.headline{font-size:12pt;color:#333;margin:0}' +
+      '.contact{font-size:10pt;color:#444;margin:6px 0 0}</style>',
+    '</head><body>'
+  ];
+
+  parts.push('<h1>' + escapeHtml(name) + '</h1>');
+  if (headline) parts.push('<p class="headline">' + escapeHtml(headline) + '</p>');
+  if (contact.length) parts.push('<p class="contact">' + contact.map((item) => escapeHtml(item)).join(' · ') + '</p>');
+
+  model.sections.forEach((section) => {
+    if (!section.title && !section.items.length) return;
+    if (section.title) parts.push('<h2>' + escapeHtml(section.title) + '</h2>');
+
+    let inList = false;
+    section.items.forEach((item) => {
+      if (item.type === 'li') {
+        if (!inList) {
+          parts.push('<ul>');
+          inList = true;
+        }
+        parts.push('<li>' + escapeHtml(item.text) + '</li>');
+      } else {
+        if (inList) {
+          parts.push('</ul>');
+          inList = false;
+        }
+        parts.push('<p>' + escapeHtml(item.text) + '</p>');
+      }
+    });
+    if (inList) parts.push('</ul>');
+  });
+
+  parts.push('</body></html>');
+  return parts.join('');
+}
+
+function downloadResumeWord() {
+  const application = currentApplication();
+  if (!application || !application.resume.trim()) {
+    toast('No tailored resume to download', 'error');
+    return;
+  }
+
+  const blob = new Blob(['\ufeff', resumeWordHtml(application)], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = resumeFileBase(application) + '.doc';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast('Word-ready resume downloaded');
+}
+
+async function retailorCurrentApplication() {
+  const application = currentApplication();
+  if (!application) return;
+  if (!state.profile.resumeText) {
+    toast('Add your base resume first, then knomad can re-tailor', 'error');
+    return;
+  }
+  if (!application.jobDescription.trim()) {
+    toast('This application has no saved job description to tailor against', 'error');
+    return;
+  }
+
+  const ok = await confirmAction({
+    tone: 'neutral',
+    title: 'Re-tailor this application?',
+    message: 'This replaces the saved resume, cover letter, and the questions behind interview practice. Notes, events, and practice answers stay.',
+    cancelLabel: 'Cancel',
+    confirmLabel: 'Re-tailor'
+  });
+  if (!ok) return;
+
+  const button = $('#resumeRetailorBtn');
+  const label = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Tailoring…';
+  }
+
+  try {
+    const pack = await buildJobPack({
+      company: application.company,
+      position: application.position,
+      description: application.jobDescription,
+      url: application.url
+    }, application.clarifications || '');
+
+    application.resume = pack.resume || application.resume;
+    application.interviewPrep = pack.interviewPrep || application.interviewPrep;
+    application.coverLetter = pack.coverLetter || application.coverLetter;
+    saveApplications();
+    renderApplication();
+    renderDashboard();
+    renderTracker();
+
+    if (pack.source === 'basic') {
+      toast('Re-tailored in basic mode — add a key for a full rewrite', 'error');
+    } else {
+      toast('Resume and cover letter re-tailored');
+    }
+  } catch (err) {
+    toast(err && err.message ? err.message : 'Could not re-tailor this application', 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = label || 'Re-tailor';
+    }
+  }
+}
+
+function syncCoverLetterChrome(application) {
+  const letter = String(application.coverLetter || '');
+  const meta = $('#coverLetterMetaLine');
+  if (meta) {
+    meta.textContent = letter.trim()
+      ? wordCount(letter) + ' words · for ' + (application.company || 'this team')
+      : '';
+  }
+  const actions = $('#coverLetterActions');
+  if (actions) actions.hidden = !letter.trim();
+  const button = $('#coverLetterBtn');
+  if (button) button.textContent = letter.trim() ? 'Regenerate' : 'Generate cover letter';
+}
+
+function handleCoverLetterInput(event) {
+  const application = currentApplication();
+  if (!application) return;
+  application.coverLetter = event.target.value;
+  syncCoverLetterChrome(application);
+
+  clearTimeout(coverLetterSaveTimer);
+  coverLetterSaveTimer = setTimeout(() => {
+    saveApplications();
+    const saved = $('#coverLetterSaved');
+    if (!saved) return;
+    saved.textContent = 'Saved';
+    setTimeout(() => {
+      if (saved.textContent === 'Saved') saved.textContent = '';
+    }, 1600);
+  }, 500);
+}
+
+async function generateCoverLetterForCurrent() {
+  const application = currentApplication();
+  if (!application) return;
+  if (!state.profile.resumeText) {
+    toast('Add your base resume first, then knomad can draft a cover letter', 'error');
+    return;
+  }
+
+  if (String(application.coverLetter || '').trim()) {
+    const ok = await confirmAction({
+      tone: 'neutral',
+      title: 'Draft a new cover letter?',
+      message: 'This replaces the saved cover letter. The resume, notes, and practice answers stay.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Regenerate'
+    });
+    if (!ok) return;
+  }
+
+  const button = $('#coverLetterBtn');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Drafting…';
+  }
+
+  try {
+    const pack = await buildJobPack({
+      company: application.company,
+      position: application.position,
+      description: application.jobDescription,
+      url: application.url
+    }, application.clarifications || '');
+
+    application.coverLetter = pack.coverLetter || '';
+    saveApplications();
+    renderApplication();
+
+    if (pack.source === 'basic') {
+      toast('Cover letter drafted in basic mode — add a key for a full rewrite', 'error');
+    } else {
+      toast('Cover letter drafted');
+    }
+  } catch (err) {
+    toast(err && err.message ? err.message : 'Could not draft a cover letter', 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = String(application.coverLetter || '').trim() ? 'Regenerate' : 'Generate cover letter';
+    }
+  }
+}
+
+function coverLetterWordHtml(application) {
+  const blocks = String(application.coverLetter || '')
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  return [
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+      'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
+    '<head><meta charset="utf-8"><title>' + escapeHtml([application.position, application.company].filter(Boolean).join(' · ') || 'Cover letter') + '</title>',
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11.5pt;color:#111;margin:56px;line-height:1.5}' +
+      'p{margin:0 0 12px}</style>',
+    '</head><body>',
+    ...blocks.map((block) => '<p>' + escapeHtml(block).replace(/\n/g, '<br>') + '</p>'),
+    '</body></html>'
+  ].join('');
+}
+
+async function buildCoverLetterPdf(application) {
+  const module = await import('jspdf');
+  const JsPDF = module.jsPDF || (module.default && module.default.jsPDF);
+  if (typeof JsPDF !== 'function') throw new Error('PDF library unavailable');
+
+  const doc = new JsPDF({ unit: 'pt', format: 'letter', compress: true });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 54;
+  const contentWidth = pageWidth - margin * 2;
+  const profile = state.profile;
+
+  const setText = (size, style, color) => {
+    doc.setFont('helvetica', style);
+    doc.setFontSize(size);
+    doc.setTextColor(color[0], color[1], color[2]);
+  };
+
+  let y = margin;
+
+  setText(22, 'bold', [16, 35, 30]);
+  doc.text(profile.name || 'Your Name', margin, y + 22);
+  y += 28;
+
+  if (profile.headline) {
+    setText(10.5, 'bold', [53, 104, 94]);
+    doc.text(profile.headline, margin, y + 10.5);
+    y += 15;
+  }
+
+  const contact = resumeContactFallback();
+  if (contact.length) {
+    setText(8.5, 'normal', [91, 111, 105]);
+    doc.text(contact.join('   ·   '), margin, y + 8.5);
+    y += 12;
+  }
+
+  y += 8;
+  doc.setDrawColor(215, 225, 220);
+  doc.setLineWidth(0.8);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 26;
+
+  const size = 10.5;
+  const lineHeight = size * 1.6;
+  const paragraphGap = 10;
+
+  setText(size, 'normal', [27, 42, 38]);
+
+  const paragraphs = String(application.coverLetter || '')
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  paragraphs.forEach((block) => {
+    block.split('\n').forEach((logicalLine) => {
+      const line = logicalLine.trim();
+      if (!line) {
+        y += lineHeight * 0.5;
+        return;
+      }
+      doc.splitTextToSize(line, contentWidth).forEach((wrapped) => {
+        if (y + lineHeight > pageHeight - margin) {
+          doc.addPage();
+          y = margin;
+          setText(size, 'normal', [27, 42, 38]);
+        }
+        doc.text(wrapped, margin, y + size);
+        y += lineHeight;
+      });
+    });
+    y += paragraphGap;
+  });
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    setText(7.5, 'normal', [140, 150, 146]);
+    doc.text('knomad · ' + page + ' / ' + pageCount, pageWidth - margin, pageHeight - 24, { align: 'right' });
+  }
+
+  doc.setProperties({
+    title: [application.position, application.company].filter(Boolean).join(' · ') || 'Cover letter',
+    subject: 'Cover letter written with knomad',
+    creator: 'knomad'
+  });
+
+  return doc;
+}
+
+async function downloadCoverLetterPdf() {
+  const application = currentApplication();
+  if (!application || !String(application.coverLetter || '').trim()) {
+    toast('No cover letter to download', 'error');
+    return;
+  }
+
+  const button = $('#coverLetterPdfBtn');
+  const label = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Building…';
+  }
+
+  try {
+    const doc = await buildCoverLetterPdf(application);
+    doc.save(resumeFileBase(application) + '-cover-letter.pdf');
+    toast('Cover letter PDF downloaded');
+  } catch (err) {
+    console.warn('Cover letter PDF generation failed', err);
+    toast('Could not build the cover letter PDF', 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = label || 'Download PDF';
+    }
+  }
+}
+
+function downloadCoverLetterWord() {
+  const application = currentApplication();
+  if (!application || !String(application.coverLetter || '').trim()) {
+    toast('No cover letter to download', 'error');
+    return;
+  }
+
+  const blob = new Blob(['\ufeff', coverLetterWordHtml(application)], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = resumeFileBase(application) + '-cover-letter.doc';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast('Cover letter downloaded');
+}
+
 // ---------------------------------------------------------------- Interview practice
 
 function cleanPracticeQuestion(value) {
@@ -5247,6 +6408,97 @@ function practiceHintFor(question) {
     return 'Break it into 30/60/90-day outcomes: learn, contribute, then own something measurable.';
   }
   return 'Anchor this in a specific example from your resume. Set the situation, describe your action, and end with the result.';
+}
+
+const PRACTICE_MOTIVATIONAL_CUES = /\b(why (?:do you want|are you interested|this|our|are you leaving)|what (?:interests|excites|motivates) you|why should we (?:hire|choose)|where do you see yourself|first (?:30|60|90) days|career goals|salary expectations|why (?:the|this) (?:role|company|position|job))\b/i;
+const PRACTICE_BEHAVIORAL_CUES = /\b(tell me about a time|describe a (?:situation|time|project|moment)|give me an example|walk me through a time|have you ever|when have you|how did you handle|a time (?:when|you)|conflict|disagree(?:d|ment)?|failure|mistake|under pressure|deadline|learn(?:ed|ing)? (?:something )?quickly|teamwork|worked with a team)\b/i;
+const PRACTICE_TECHNICAL_CUES = /\b(explain (?:how|what|the|why)|how would you (?:build|design|debug|test|approach|scale)|what(?:'s| is) the difference|write (?:a|an|the)|code|algorithm|architecture|system design|database|sql query|api design|complexity|trade-?offs?)\b/i;
+
+function classifyPracticeQuestion(text) {
+  const value = String(text || '');
+  if (PRACTICE_MOTIVATIONAL_CUES.test(value)) return 'motivational';
+  if (PRACTICE_BEHAVIORAL_CUES.test(value)) return 'behavioral';
+  if (PRACTICE_TECHNICAL_CUES.test(value)) return 'technical';
+  return 'behavioral';
+}
+
+const STAR_PATTERNS = {
+  situation: /\b(situation|context|when i|while i|at (my|the|our) (company|team|project|last job))\b/i,
+  task: /\b(task|goal|responsible for|needed to|asked to|had to)\b/i,
+  action: /\b(i|we)\s+(built|led|ran|designed|wrote|shipped|created|launched|organized|analy[sz]ed|implemented|moved|coordinated|managed|drove|tested|rewrote|negotiated|partnered|owned|fixed|migrated|reduced|improved)\b/i,
+  result: /\b(result|outcome|impact|as a result|led to|which (helped|meant)|increased|decreased|improved|reduced|saved|grew|cut|raised|won)\b/i
+};
+
+function starFlags(text) {
+  const value = String(text || '');
+  return {
+    situation: STAR_PATTERNS.situation.test(value),
+    task: STAR_PATTERNS.task.test(value),
+    action: STAR_PATTERNS.action.test(value),
+    result: STAR_PATTERNS.result.test(value)
+  };
+}
+
+function practiceTypeLabel(type) {
+  if (type === 'motivational') return 'Motivation';
+  if (type === 'technical') return 'Technical';
+  return 'Behavioral';
+}
+
+function practiceProbe(question) {
+  const type = question && question.type;
+  if (type === 'technical') return 'Which trade-off did you weigh, and why that one?';
+  if (type === 'motivational') return 'What would you do in your first 30 days to earn trust?';
+  return 'What was the measurable result, and what would you do differently?';
+}
+
+function practiceModelOutline(question, application) {
+  const role = (application && application.position) || 'this role';
+  const company = (application && application.company) || 'the company';
+  const type = question && question.type;
+
+  if (type === 'motivational') {
+    return [
+      'Skeleton — fill with your own facts:',
+      '- What draws you to ' + company + ' specifically.',
+      '- One thing from your background that connects to ' + role + '.',
+      '- What you would want to do in the first few months.',
+      '- Keep it under a minute.'
+    ].join('\n');
+  }
+
+  if (type === 'technical') {
+    return [
+      'Skeleton:',
+      '- Restate the problem in one line.',
+      '- Name your approach and the trade-off you would weigh.',
+      '- Walk through the steps in order.',
+      '- Finish with how you would test or check it.'
+    ].join('\n');
+  }
+
+  return [
+    'Skeleton — replace with a real story from your resume:',
+    '- Situation: where you were and what was at stake.',
+    '- Task: what you were responsible for.',
+    '- Action: the two or three things you did.',
+    '- Result: the measurable outcome.',
+    '- Link it back briefly to ' + role + '.'
+  ].join('\n');
+}
+
+function starChecklistHtml(answer) {
+  const flags = starFlags(answer);
+  const items = [
+    ['Situation', flags.situation],
+    ['Task', flags.task],
+    ['Action', flags.action],
+    ['Result', flags.result]
+  ];
+  return '<div class="practice-star" id="practiceStar" aria-label="STAR checklist">' +
+    items.map(([label, on]) => '<span class="star-chip' + (on ? ' on' : '') + '">' +
+      escapeHtml(label) + '</span>').join('') +
+    '</div>';
 }
 
 function parsePracticeQuestions(brief) {
@@ -5320,7 +6572,8 @@ function parsePracticeQuestions(brief) {
   return questions
     .map((question) => ({
       text: question.text,
-      hint: question.hint || practiceHintFor(question.text)
+      hint: question.hint || practiceHintFor(question.text),
+      type: classifyPracticeQuestion(question.text)
     }))
     .filter((question) => {
       const key = question.text.toLowerCase();
@@ -5343,7 +6596,7 @@ function fallbackPracticeQuestions(application) {
     'Tell me about a time you had to learn something quickly. How did you approach it?',
     'Where have you disagreed with a teammate or stakeholder? How did you resolve it?',
     'Why ' + company + ', and what would you want to accomplish in your first 90 days?'
-  ].map((text) => ({ text, hint: practiceHintFor(text) }));
+  ].map((text) => ({ text, hint: practiceHintFor(text), type: classifyPracticeQuestion(text) }));
 }
 
 function practiceQuestions(application) {
@@ -5384,6 +6637,7 @@ function scorePracticeAnswer(answer, question, application) {
   if (!text) {
     return {
       score: 0,
+      rubric: [],
       feedback: [
         'No answer recorded. Even a rough outline beats a blank — start with the situation and what you did.',
         'Use this question as a prompt for a two-minute story from your resume.'
@@ -5409,13 +6663,8 @@ function scorePracticeAnswer(answer, question, application) {
     feedback.push('Tighten this. A strong spoken answer usually lands in 60–180 words.');
   }
 
-  const starPatterns = [
-    /\b(situation|context|when i|while i|at (my|the|our) (company|team|project|last job))\b/i,
-    /\b(task|goal|responsible for|needed to|asked to|had to)\b/i,
-    /\b(i|we)\s+(built|led|ran|designed|wrote|shipped|created|launched|organized|analy[sz]ed|implemented|moved|coordinated|managed|drove|tested|rewrote|negotiated|partnered|owned)\b/i,
-    /\b(result|outcome|impact|as a result|led to|which (helped|meant)|increased|decreased|improved|reduced|saved|grew|cut|raised|won)\b/i
-  ];
-  const starHits = starPatterns.filter((pattern) => pattern.test(text)).length;
+  const flags = starFlags(text);
+  const starHits = Object.values(flags).filter(Boolean).length;
   score += starHits * 5;
 
   if (starHits < 3) {
@@ -5458,6 +6707,13 @@ function scorePracticeAnswer(answer, question, application) {
   else if (ownership >= 1) score += 3;
   else feedback.push('Make your role explicit — say what you decided or did, not only what the team did.');
 
+  const rubric = [
+    { label: 'Structure', value: starHits, max: 4 },
+    { label: 'Specifics', value: numbers.length >= 3 ? 3 : numbers.length >= 1 ? 2 : 0, max: 3 },
+    { label: 'Ownership', value: ownership >= 3 ? 3 : ownership >= 1 ? 2 : 0, max: 3 },
+    { label: 'Outcome', value: impact.length >= 2 ? 3 : impact.length === 1 ? 2 : 0, max: 3 }
+  ];
+
   let fillers = 0;
   PRACTICE_FILLERS.forEach((filler) => {
     const pattern = new RegExp('\\b' + filler.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
@@ -5475,6 +6731,7 @@ function scorePracticeAnswer(answer, question, application) {
 
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
+    rubric,
     feedback: cleanFeedback.slice(0, 4)
   };
 }
@@ -5482,7 +6739,7 @@ function scorePracticeAnswer(answer, question, application) {
 function gradePractice(application, questions, answers) {
   const results = questions.map((question, index) => {
     const graded = scorePracticeAnswer(answers[index] || '', question, application);
-    return { score: graded.score, feedback: graded.feedback };
+    return { score: graded.score, rubric: graded.rubric || [], feedback: graded.feedback };
   });
 
   const score = results.length
@@ -5493,15 +6750,20 @@ function gradePractice(application, questions, answers) {
 }
 
 function practiceIntroHtml(questions) {
+  const behavioral = questions.filter((question) => question.type === 'behavioral').length;
   return '<div class="practice-intro">' +
     '<h4>Practice the conversation, one question at a time</h4>' +
-    '<p>knomad pulls the likely questions from your interview brief. Answer in your own words, move at your own pace, and get a score when you finish. Answers stay on this device.</p>' +
+    '<p>knomad lines up likely questions from the prep drafted for this application. Behavioral questions get a live STAR checklist and a plain skeleton you fill with your own facts; when you finish, each answer is scored on structure, specifics, ownership, and outcome. It checks your writing, not whether your facts are right. Answers stay on this device.</p>' +
     '<div class="practice-facts">' +
     '<span class="practice-fact">' + questions.length + ' questions</span>' +
-    '<span class="practice-fact">Local scoring</span>' +
-    '<span class="practice-fact">Answers saved</span>' +
+    (behavioral ? '<span class="practice-fact">' + behavioral + ' behavioral</span>' : '') +
+    '<span class="practice-fact">Local signal</span>' +
     '</div>' +
+    '<div class="practice-start-row">' +
     '<button class="btn primary" type="button" data-practice="start">Start practice</button>' +
+    '<button class="btn ghost" type="button" data-practice="mock">Start mock interview</button>' +
+    '</div>' +
+    '<p class="field-help">Mock mode hides hints and the model outline so it feels like the real thing.</p>' +
     '</div>';
 }
 
@@ -5512,23 +6774,38 @@ function practiceQuestionHtml(questions, session) {
   const words = wordCount(answer);
   const percent = Math.round(((index + 1) / questions.length) * 100);
   const last = index === questions.length - 1;
+  const mock = Boolean(session.mock);
+
+  const star = question.type === 'behavioral' && !mock ? starChecklistHtml(answer) : '';
+  const outline = mock ? '' :
+    '<details class="practice-outline">' +
+      '<summary>Model outline</summary>' +
+      '<pre class="practice-outline-body">' +
+        escapeHtml(practiceModelOutline(question, currentApplication())) +
+      '</pre>' +
+    '</details>';
 
   return '<div class="practice-progress-row">' +
     '<span>Question ' + (index + 1) + ' of ' + questions.length + '</span>' +
-    '<span>' + percent + '% complete</span>' +
+    '<span>' + (mock ? '<span class="practice-badge">Mock</span> ' : '') + percent + '% complete</span>' +
     '</div>' +
     '<div class="practice-progress" role="progressbar" aria-label="Practice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><span style="width:' + percent + '%"></span></div>' +
+    '<span class="practice-type">' + escapeHtml(practiceTypeLabel(question.type)) + '</span>' +
     '<h4 class="practice-question">' + escapeHtml(question.text) + '</h4>' +
+    star +
     '<div class="practice-hint" id="practiceHint" hidden>' + escapeHtml(question.hint) + '</div>' +
     '<textarea class="practice-answer" id="practiceAnswer" aria-label="Your answer to question ' + (index + 1) + '" placeholder="Write your answer the way you would say it out loud…">' + escapeHtml(answer) + '</textarea>' +
     '<div class="practice-answer-row">' +
     '<span id="practiceWordCount">' + words + (words === 1 ? ' word' : ' words') + '</span>' +
-    '<button class="btn ghost small" type="button" data-practice="hint">Show a hint</button>' +
+    (mock
+      ? '<span class="field-help">Hints are hidden in mock mode</span>'
+      : '<button class="btn ghost small" type="button" data-practice="hint">Show a hint</button>') +
     '</div>' +
+    outline +
     '<div class="practice-actions">' +
     '<span class="field-help">Your answer is saved locally as you type.</span>' +
     '<div class="practice-actions-right">' +
-    '<button class="btn ghost" type="button" data-practice="prev"' + (index === 0 ? ' disabled' : '') + '>Back</button>' +
+    '<button class="btn ghost" type="button" data-practice="prev"' + (index === 0 || mock ? ' disabled' : '') + '>Back</button>' +
     '<button class="btn primary" type="button" data-practice="next">' + (last ? 'Finish &amp; score' : 'Next question') + '</button>' +
     '</div>' +
     '</div>';
@@ -5551,13 +6828,22 @@ function practiceResultsHtml(questions, session) {
   const totalWords = session.answers.reduce((sum, answer) => sum + wordCount(answer), 0);
 
   const rows = questions.map((question, index) => {
-    const result = session.results[index] || { score: 0, feedback: [] };
+    const result = session.results[index] || { score: 0, feedback: [], rubric: [] };
     const answer = session.answers[index] || '';
+    const rubric = (result.rubric || []).map((entry) =>
+      '<span class="rubric-chip' +
+        (entry.value >= entry.max ? ' full' : entry.value === 0 ? ' zero' : '') + '">' +
+        escapeHtml(entry.label) + ' ' + entry.value + '/' + entry.max + '</span>').join('');
     return '<div class="practice-result">' +
       '<div class="practice-result-head">' +
       '<h4>' + (index + 1) + '. ' + escapeHtml(question.text) + '</h4>' +
-      '<span class="practice-score ' + practiceTone(result.score) + '">' + result.score + '/100</span>' +
+      '<span class="practice-score ' + practiceTone(result.score) + '">' + result.score + '/100 signal</span>' +
       '</div>' +
+      '<div class="practice-result-meta">' +
+      '<span class="practice-type">' + escapeHtml(practiceTypeLabel(question.type)) + '</span>' +
+      '<span class="practice-probe">Likely follow-up: ' + escapeHtml(practiceProbe(question)) + '</span>' +
+      '</div>' +
+      (rubric ? '<div class="practice-rubric">' + rubric + '</div>' : '') +
       '<p class="practice-answer-text' + (answer ? '' : ' empty') + '">' +
       escapeHtml(answer || 'No answer recorded.') +
       '</p>' +
@@ -5568,11 +6854,12 @@ function practiceResultsHtml(questions, session) {
   }).join('');
 
   return '<div class="practice-result-hero">' +
-    '<div class="score-ring ' + tone + '" style="--score:' + score + '" role="img" aria-label="Overall score ' + score + ' out of 100"><span>' + score + '<small>/100</small></span></div>' +
+    '<div class="score-ring ' + tone + '" style="--score:' + score + '" role="img" aria-label="Overall signal ' + score + ' out of 100"><span>' + score + '<small>/100</small></span></div>' +
     '<div class="practice-result-copy"><h4>' + headline + '</h4><p>' + summary + '</p></div>' +
     '</div>' +
+    '<p class="field-help" style="margin: -6px 0 14px;">This signal measures length, structure, keywords, and fillers. It does not verify your facts.</p>' +
     '<div class="practice-actions" style="border-top:0; padding-top:4px;">' +
-    '<span class="field-help">' + questions.length + ' answers · ' + totalWords + ' words practiced</span>' +
+    '<span class="field-help">' + (session.mock ? 'Mock interview · ' : '') + questions.length + ' answers · ' + totalWords + ' words practiced</span>' +
     '<button class="btn primary" type="button" data-practice="retake">Practice again</button>' +
     '</div>' +
     '<div class="practice-results">' + rows + '</div>';
@@ -5627,6 +6914,15 @@ function handlePracticeInput(event) {
   const label = $('#practiceWordCount');
   if (label) label.textContent = count + (count === 1 ? ' word' : ' words');
 
+  const star = $('#practiceStar');
+  if (star) {
+    const flags = starFlags(input.value);
+    const order = ['situation', 'task', 'action', 'result'];
+    star.querySelectorAll('.star-chip').forEach((chip, i) => {
+      chip.classList.toggle('on', Boolean(flags[order[i]]));
+    });
+  }
+
   const appId = currentDetailId;
   const activeApp = currentApplication();
   const activeSession = activeApp ? activeApp.interviewSession : null;
@@ -5656,7 +6952,7 @@ function handlePracticeAction(action) {
   const questions = practiceQuestions(application);
   ensurePracticeAnswers(session, questions.length);
 
-  if (action === 'start' || action === 'retake') {
+  if (action === 'start' || action === 'mock' || action === 'retake') {
     session.started = true;
     session.completed = false;
     session.index = 0;
@@ -5664,6 +6960,8 @@ function handlePracticeAction(action) {
     session.results = [];
     session.gradedAt = null;
     session.answers = questions.map(() => '');
+    if (action === 'start') session.mock = false;
+    if (action === 'mock') session.mock = true;
     saveApplications();
     renderPractice();
     return;
@@ -5687,7 +6985,7 @@ function handlePracticeAction(action) {
       session.gradedAt = new Date().toISOString();
       saveApplications();
       renderPractice();
-      toast('Practice scored: ' + graded.score + '/100');
+      toast('Practice signal: ' + graded.score + '/100');
     } else {
       session.index += 1;
       saveApplications();
@@ -5709,9 +7007,20 @@ function updateApplication(id, patch) {
   const application = state.applications.find((app) => String(app.id) === String(id));
   if (!application) return;
 
-  if (patch.status && patch.status !== application.status) {
+  if (patch.stage != null) {
+    const stage = normalizeStage(patch.stage);
+    if (stage !== application.stage) {
+      patch.stage = stage;
+      patch.status = stageBucket(stage);
+      application.statusHistory = (application.statusHistory || [])
+        .concat({ status: patch.status, stage, at: new Date().toISOString() });
+    } else {
+      delete patch.stage;
+      delete patch.status;
+    }
+  } else if (patch.status && patch.status !== application.status) {
     application.statusHistory = (application.statusHistory || [])
-      .concat({ status: patch.status, at: new Date().toISOString() });
+      .concat({ status: patch.status, stage: application.stage, at: new Date().toISOString() });
   }
 
   Object.assign(application, patch);
@@ -5726,14 +7035,129 @@ function updateApplication(id, patch) {
 
 function updateCurrentStatus(value) {
   if (!currentDetailId) return;
-  updateApplication(currentDetailId, { status: value });
-  toast('Status updated to ' + STATUS_LABEL[value]);
+  const stage = normalizeStage(value);
+  const application = state.applications.find((app) => String(app.id) === String(currentDetailId));
+  const changed = application && application.stage !== stage;
+  updateApplication(currentDetailId, { stage });
+  toast(changed ? 'Stage updated to ' + stageLabel(stage) : 'Already at ' + stageLabel(stage));
 }
 
-function saveCurrentNotes() {
+// Notes, next step, and the applied date save as they change. They skip
+// renderApplication on purpose: re-rendering while the field has focus would
+// throw away the caret and any half-typed text.
+let notesSaveTimer = null;
+let nextActionSaveTimer = null;
+
+function flashSaved(labelId) {
+  const label = $(labelId);
+  if (!label) return;
+  label.textContent = 'Saved';
+  setTimeout(() => {
+    if (label.textContent === 'Saved') label.textContent = '';
+  }, 1600);
+}
+
+function queueNotesSave() {
+  const id = currentDetailId;
+  if (!id) return;
+  const value = $('#detailNotes') ? $('#detailNotes').value.trim() : '';
+  const label = $('#notesSaved');
+  if (label) label.textContent = 'Saving…';
+
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(() => {
+    const application = state.applications.find((app) => String(app.id) === String(id));
+    if (!application) return;
+    application.notes = value;
+    saveApplications();
+    renderDashboard();
+    renderTracker();
+    flashSaved('#notesSaved');
+  }, 500);
+}
+
+function queueNextActionSave() {
+  const id = currentDetailId;
+  if (!id) return;
+  const action = $('#detailNextAction') ? $('#detailNextAction').value.trim() : '';
+  const dateValue = $('#detailNextActionAt') ? $('#detailNextActionAt').value : '';
+  const label = $('#nextActionSaved');
+  if (label) label.textContent = 'Saving…';
+
+  clearTimeout(nextActionSaveTimer);
+  nextActionSaveTimer = setTimeout(() => {
+    const application = state.applications.find((app) => String(app.id) === String(id));
+    if (!application) return;
+    application.nextAction = action;
+    application.nextActionAt = dateValue
+      ? new Date(dateValue + 'T09:00:00').toISOString()
+      : '';
+    saveApplications();
+    renderDashboard();
+    renderTracker();
+    flashSaved('#nextActionSaved');
+  }, 500);
+}
+
+function updateAppliedDate(value) {
+  if (!currentDetailId || !value) return;
+  const application = state.applications.find((app) => String(app.id) === String(currentDetailId));
+  if (!application) return;
+
+  const parsed = new Date(value + 'T12:00:00');
+  if (Number.isNaN(parsed.getTime())) return;
+  application.dateApplied = parsed.toISOString();
+
+  if (Array.isArray(application.statusHistory)) {
+    const applied = application.statusHistory.find((entry) => entry.status === 'applied');
+    if (applied) applied.at = application.dateApplied;
+  }
+
+  saveApplications();
+  renderDashboard();
+  renderTracker();
+  renderCalendar();
+  renderApplication();
+  toast('Applied date updated');
+}
+
+function scheduleFollowUp() {
   if (!currentDetailId) return;
-  updateApplication(currentDetailId, { notes: $('#detailNotes').value.trim() });
-  toast('Notes saved');
+  const application = state.applications.find((app) => String(app.id) === String(currentDetailId));
+  if (!application) return;
+
+  const when = new Date();
+  when.setDate(when.getDate() + 7);
+  when.setHours(9, 0, 0, 0);
+  const at = when.toISOString();
+
+  const existing = (application.events || []).some((event) =>
+    /follow[- ]?up/i.test(event.title || '') && new Date(event.at).getTime() > Date.now()
+  );
+
+  if (!existing) {
+    application.events = normalizeEvents((application.events || []).concat({
+      id: makeEventId(),
+      kind: 'reminder',
+      title: 'Follow up',
+      at,
+      reminder: 0
+    }));
+  }
+
+  application.nextAction = 'Follow up';
+  application.nextActionAt = at;
+  saveApplications();
+  renderApplication();
+  renderDashboard();
+  renderCalendar();
+  renderTracker();
+
+  if (existing) {
+    toast('A follow-up is already on the calendar');
+  } else {
+    toast('Follow-up scheduled for ' + formatDate(at));
+  }
 }
 
 async function deleteApplication(id) {
@@ -6318,6 +7742,36 @@ function userOnline(user) {
   return Boolean(user && user.online);
 }
 
+// Presence is a heartbeat, so an offline kniggur still has a useful timestamp.
+// Keep the label short in lists and put the exact time in a hover title.
+function lastSeenAgo(value) {
+  const seen = value ? new Date(value) : null;
+  if (!seen || Number.isNaN(seen.getTime())) return '';
+  const minutes = Math.max(0, Math.floor((Date.now() - seen.getTime()) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return minutes + 'm ago';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + 'h ago';
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return days + 'd ago';
+  return seen.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function lastSeenText(user) {
+  if (!user || userOnline(user)) return '';
+  const ago = lastSeenAgo(user.lastSeenAt);
+  return ago ? 'last seen ' + ago : '';
+}
+
+function lastSeenTooltip(user) {
+  const seen = user && user.lastSeenAt ? new Date(user.lastSeenAt) : null;
+  if (!seen || Number.isNaN(seen.getTime())) return '';
+  return 'Last seen ' + seen.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  });
+}
+
 // A small dot after the name, plus a ring on the avatar. Missing or stale
 // presence data reads as offline, never as a guess.
 function onlineDot(user) {
@@ -6335,8 +7789,11 @@ function onlineDotById(id) {
 
 function socialAvatar(user) {
   const name = (user && (user.name || user.email)) || '?';
-  return '<span class="social-avatar' + (userOnline(user) ? ' is-online' : '') +
-    '" aria-hidden="true">' + escapeHtml(initials(name)) + '</span>';
+  const online = userOnline(user);
+  const title = online ? 'Online now' : lastSeenTooltip(user);
+  return '<span class="social-avatar' + (online ? ' is-online' : '') + '"' +
+    (title ? ' title="' + escapeHtml(title) + '"' : '') +
+    ' aria-hidden="true">' + escapeHtml(initials(name)) + '</span>';
 }
 
 function socialPersonName(user) {
@@ -6344,11 +7801,16 @@ function socialPersonName(user) {
 }
 
 function socialNameHtml(user) {
-  return escapeHtml(socialPersonName(user)) + onlineDot(user);
+  const title = userOnline(user) ? 'Online now' : lastSeenTooltip(user);
+  return '<span' + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' +
+    escapeHtml(socialPersonName(user)) + onlineDot(user) + '</span>';
 }
 
 function personNameHtml(id) {
-  return escapeHtml(personName(id)) + onlineDotById(id);
+  const person = id ? state.space.people[id] : null;
+  const title = person && (userOnline(person) ? 'Online now' : lastSeenTooltip(person));
+  return '<span' + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' +
+    escapeHtml(personName(id)) + onlineDotById(id) + '</span>';
 }
 
 function renderFriendRequests() {
@@ -6412,11 +7874,13 @@ function renderFriendList() {
 
   host.innerHTML = friends.map((friend) => {
     const detail = friend.headline || friend.email || 'Knomad member';
+    const seen = lastSeenText(friend);
     return '<div class="social-person">' +
       socialAvatar(friend) +
       '<div class="social-person-main">' +
         '<strong>' + socialNameHtml(friend) + '</strong>' +
         '<span title="' + escapeHtml(friend.email || '') + '">' + escapeHtml(detail) + '</span>' +
+        (seen ? '<span class="social-last-seen">' + escapeHtml(seen) + '</span>' : '') +
       '</div>' +
       '<div class="social-person-actions">' +
         '<button class="btn ghost small" type="button" data-send-to="' + escapeHtml(friend.id) + '">Send job</button>' +
@@ -7520,13 +8984,15 @@ function renderCircleCard() {
     host.innerHTML = members.map((member) => {
       const self = member.userId === me;
       const canRemove = self ? !isOwner : isOwner;
+      const person = state.space.people[member.userId];
+      const seen = lastSeenText(person);
       const detail = member.role === 'owner' ? 'Owner' : (self ? 'You' : 'Member');
       return '<div class="social-person">' +
         '<span class="social-avatar' + (onlineById(member.userId) ? ' is-online' : '') + '" aria-hidden="true">' +
           escapeHtml(initials(personName(member.userId))) + '</span>' +
         '<div class="social-person-main">' +
           '<strong>' + personNameHtml(member.userId) + '</strong>' +
-          '<span>' + escapeHtml(detail) + '</span>' +
+          '<span>' + escapeHtml(detail + (seen ? ' · ' + seen : '')) + '</span>' +
         '</div>' +
         (canRemove
           ? '<div class="social-person-actions"><button class="btn ghost small" type="button" data-circle-remove="' +
@@ -9409,6 +10875,7 @@ function scheduleRowHtml(item, options = {}) {
     '<span class="event-kind' + kindClass + '"></span>' +
     main +
     gcal +
+    (item.source === 'application' && item.event ? eventIcsButton(item.event) : '') +
     action +
   '</div>';
 }
@@ -9879,6 +11346,13 @@ function bindEvents() {
       return;
     }
 
+    const eventIcs = event.target.closest('[data-event-ics]');
+    if (eventIcs) {
+      event.preventDefault();
+      downloadEventIcs(eventIcs.dataset.eventIcs);
+      return;
+    }
+
     const eventDel = event.target.closest('[data-event-del]');
     if (eventDel) {
       event.preventDefault();
@@ -9890,7 +11364,7 @@ function bindEvents() {
     if (copy) {
       event.preventDefault();
       const target = $('#' + copy.dataset.copy);
-      if (target) copyText(target.textContent);
+      if (target) copyText('value' in target ? target.value : target.textContent);
       return;
     }
 
@@ -10255,7 +11729,15 @@ function bindEvents() {
   }
 
   const addForm = $('#addJobForm');
-  if (addForm) addForm.addEventListener('submit', handleAddJobSubmit);
+  if (addForm) {
+    addForm.addEventListener('submit', handleAddJobSubmit);
+    addForm.addEventListener('click', (event) => {
+      const mode = event.target.closest('[data-add-mode]');
+      if (!mode) return;
+      event.preventDefault();
+      setAddJobMode(mode.dataset.addMode);
+    });
+  }
 
   const questionsForm = $('#questionsForm');
   if (questionsForm) {
@@ -10285,11 +11767,29 @@ function bindEvents() {
     });
   }
 
+  const pasteInstead = $('#pasteInsteadBtn');
+  if (pasteInstead) pasteInstead.addEventListener('click', usePastedDescription);
+
   const statusSelect = $('#detailStatus');
   if (statusSelect) statusSelect.addEventListener('change', (event) => updateCurrentStatus(event.target.value));
 
-  const saveNotes = $('#saveNotesBtn');
-  if (saveNotes) saveNotes.addEventListener('click', saveCurrentNotes);
+  const detailNotes = $('#detailNotes');
+  if (detailNotes) detailNotes.addEventListener('input', queueNotesSave);
+
+  const detailAppliedDate = $('#detailAppliedDate');
+  if (detailAppliedDate) detailAppliedDate.addEventListener('change', (event) => updateAppliedDate(event.target.value));
+
+  const detailNextAction = $('#detailNextAction');
+  if (detailNextAction) detailNextAction.addEventListener('input', queueNextActionSave);
+
+  const detailNextActionAt = $('#detailNextActionAt');
+  if (detailNextActionAt) detailNextActionAt.addEventListener('change', queueNextActionSave);
+
+  const followUpBtn = $('#followUpBtn');
+  if (followUpBtn) followUpBtn.addEventListener('click', scheduleFollowUp);
+
+  const trackerSort = $('#trackerSort');
+  if (trackerSort) trackerSort.addEventListener('change', renderTracker);
 
   const eventForm = $('#eventForm');
   if (eventForm) eventForm.addEventListener('submit', handleEventSubmit);
@@ -10300,8 +11800,26 @@ function bindEvents() {
   const resumePdfBtn = $('#resumePdfBtn');
   if (resumePdfBtn) resumePdfBtn.addEventListener('click', downloadResumePdf);
 
+  const resumeDocBtn = $('#resumeDocBtn');
+  if (resumeDocBtn) resumeDocBtn.addEventListener('click', downloadResumeWord);
+
+  const resumeRetailorBtn = $('#resumeRetailorBtn');
+  if (resumeRetailorBtn) resumeRetailorBtn.addEventListener('click', retailorCurrentApplication);
+
   const resumePrintBtn = $('#resumePrintBtn');
   if (resumePrintBtn) resumePrintBtn.addEventListener('click', printResume);
+
+  const coverLetterBtn = $('#coverLetterBtn');
+  if (coverLetterBtn) coverLetterBtn.addEventListener('click', generateCoverLetterForCurrent);
+
+  const coverLetterField = $('#detailCoverLetter');
+  if (coverLetterField) coverLetterField.addEventListener('input', handleCoverLetterInput);
+
+  const coverLetterDocBtn = $('#coverLetterDocBtn');
+  if (coverLetterDocBtn) coverLetterDocBtn.addEventListener('click', downloadCoverLetterWord);
+
+  const coverLetterPdfBtn = $('#coverLetterPdfBtn');
+  if (coverLetterPdfBtn) coverLetterPdfBtn.addEventListener('click', downloadCoverLetterPdf);
 
   const calPrev = $('#calPrevBtn');
   if (calPrev) calPrev.addEventListener('click', () => shiftMonth(-1));
@@ -10309,6 +11827,9 @@ function bindEvents() {
   if (calNext) calNext.addEventListener('click', () => shiftMonth(1));
   const calToday = $('#calTodayBtn');
   if (calToday) calToday.addEventListener('click', goToday);
+
+  const calIcs = $('#calIcsBtn');
+  if (calIcs) calIcs.addEventListener('click', downloadCalendarIcs);
 
   const calDays = $('#calDays');
   if (calDays) {
