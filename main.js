@@ -12,7 +12,12 @@ import {
   subscribeToDocs,
   closeRealtime,
   uploadResumeFile,
-  aiChat
+  aiChat,
+  fetchPushConfig,
+  savePushSubscription,
+  dropPushSubscription,
+  removePushDevice,
+  sendTestPush
 } from './sync.js';
 
 import {
@@ -745,6 +750,12 @@ async function startCloudSync(session) {
   setCloudStatus('synced');
   loadSocial({ silent: true });
   loadSpace({ silent: true });
+
+  // Signing in is what makes push possible, so register the subscription now
+  // instead of waiting for the person to open Settings.
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    ensurePushSubscription().then(renderNotifyStatus);
+  }
 }
 
 async function restoreCloudSession() {
@@ -882,6 +893,9 @@ async function handleCloudSignOut() {
   });
   if (!ok) return;
   setAccountBusy(true);
+  // Remove the server-side subscription while the token still works, so a
+  // signed-out browser stops receiving that account's notifications.
+  await releasePushSubscription();
   try {
     await signOutCloud();
   } catch (err) {
@@ -7223,7 +7237,14 @@ function fireReminder(application, event) {
 
   toast(heading + ': ' + body);
 
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+  // With an active push subscription the Function sends this same reminder as
+  // a real notification, so the page only adds the toast. Without one, the page
+  // is the only place a notification can come from.
+  if (
+    typeof Notification !== 'undefined' &&
+    Notification.permission === 'granted' &&
+    !pushState.subscription
+  ) {
     try {
       new Notification('knomad · ' + heading, { body, tag: String(event.id) });
     } catch (err) {
@@ -7267,37 +7288,316 @@ function startReminders() {
   });
 }
 
-function enableNotifications() {
+// ---------------------------------------------------------------- Push
+
+/**
+ * Push is the part that works with the tab closed: the browser registers a
+ * subscription, the Function stores it against the signed-in account, and a
+ * cron tick sends reminders, due tasks, and new inbox items. The page still
+ * keeps local alerts for people who never sign in or never grant permission.
+ */
+const pushState = {
+  registration: null,
+  subscription: null,
+  publicKey: '',
+  devices: [],
+  currentId: '',
+  error: ''
+};
+
+function pushSupported() {
+  return typeof navigator !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    typeof window !== 'undefined' &&
+    'PushManager' in window;
+}
+
+function sameBytes(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// The VAPID public key travels as base64url; PushManager wants raw bytes.
+function urlBase64ToBytes(value) {
+  const raw = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = raw + '='.repeat((4 - (raw.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// The server identifies a subscribed browser by the SHA-256 of its endpoint.
+// Hashing here lets the list mark "this browser" without the endpoint ever
+// leaving the Function.
+async function subscriptionDigest(endpoint) {
+  if (!endpoint || typeof crypto === 'undefined' || !crypto.subtle) return '';
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint));
+    let binary = '';
+    new Uint8Array(digest).forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch (err) {
+    return '';
+  }
+}
+
+async function loadPushDevices() {
+  if (!cloudReady()) {
+    pushState.devices = [];
+    pushState.currentId = '';
+    renderNotifyDevices();
+    return;
+  }
+
+  try {
+    const config = await fetchPushConfig();
+    pushState.devices = config && Array.isArray(config.devices) ? config.devices : [];
+    if (config && config.publicKey && !pushState.publicKey) pushState.publicKey = config.publicKey;
+  } catch (err) {
+    pushState.devices = [];
+  }
+
+  let subscription = pushState.subscription;
+  if (!subscription && pushState.registration) {
+    try {
+      subscription = await pushState.registration.pushManager.getSubscription();
+    } catch (err) {
+      subscription = null;
+    }
+  }
+  pushState.currentId = await subscriptionDigest(subscription && subscription.endpoint);
+  renderNotifyDevices();
+}
+
+async function removeNotifyDevice(id) {
+  if (!id) return;
+  try {
+    await removePushDevice(id);
+  } catch (err) {
+    toast(err && err.message ? err.message : 'Could not remove that browser', 'error');
+    return;
+  }
+
+  pushState.devices = (pushState.devices || []).filter((device) => device.id !== id);
+  renderNotifyDevices();
+  renderNotifyStatus();
+  toast('Browser removed from notifications');
+}
+
+async function registerServiceWorker() {
+  if (!pushSupported()) return null;
+  if (pushState.registration) return pushState.registration;
+  try {
+    pushState.registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    return pushState.registration;
+  } catch (err) {
+    pushState.error = 'the notification worker could not start';
+    return null;
+  }
+}
+
+/**
+ * Make sure this browser has a live subscription the server knows about. Safe
+ * to call on every load: it reuses the browser's subscription when one exists
+ * and re-saves it, which is how a rotated endpoint gets repaired.
+ */
+async function ensurePushSubscription() {
+  if (!cloudReady() || !pushSupported()) return null;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return null;
+
+  const registration = await registerServiceWorker();
+  if (!registration) return null;
+
+  try {
+    if (!pushState.publicKey) {
+      const config = await fetchPushConfig();
+      pushState.publicKey = (config && config.publicKey) || '';
+      if (!config || !config.enabled || !pushState.publicKey) {
+        pushState.error = 'push is not configured in this build';
+        return null;
+      }
+    }
+
+    const expectedKey = urlBase64ToBytes(pushState.publicKey);
+    let subscription = await registration.pushManager.getSubscription();
+
+    // A subscription made with a previous VAPID key can never be decrypted by
+    // the current one, so replace it instead of uploading keys nothing can read.
+    const currentKey = subscription && subscription.options && subscription.options.applicationServerKey
+      ? new Uint8Array(subscription.options.applicationServerKey)
+      : null;
+    if (currentKey && !sameBytes(currentKey, expectedKey)) {
+      try {
+        await subscription.unsubscribe();
+      } catch (err) {
+        /* the browser may already have dropped it */
+      }
+      subscription = null;
+    }
+
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: expectedKey
+      });
+    }
+
+    await savePushSubscription(
+      subscription.toJSON(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    );
+
+    pushState.subscription = subscription;
+    pushState.error = '';
+    return subscription;
+  } catch (err) {
+    pushState.error = (err && err.message) || 'push could not subscribe';
+    return null;
+  }
+}
+
+async function releasePushSubscription() {
+  const subscription = pushState.subscription ||
+    (pushState.registration ? await pushState.registration.pushManager.getSubscription() : null);
+  if (!subscription) return;
+
+  const endpoint = subscription.endpoint;
+  try {
+    await dropPushSubscription(endpoint);
+  } catch (err) {
+    /* the session may already be gone; the row is harmless on the server */
+  }
+  try {
+    await subscription.unsubscribe();
+  } catch (err) {
+    /* the browser may have dropped it already */
+  }
+  pushState.subscription = null;
+}
+
+function openNotificationTarget(rawUrl) {
+  let params = null;
+  try {
+    params = new URL(String(rawUrl || ''), location.origin).searchParams;
+  } catch (err) {
+    params = null;
+  }
+  const target = params && params.get('knomad');
+  if (!target) return;
+
+  if (target === 'together') {
+    showPage('together');
+    const tab = params.get('tab');
+    if (tab && TOGETHER_TABS.includes(tab)) setTogetherTab(tab);
+  } else if (PAGE_TITLES[target] && target !== 'application') {
+    showPage(target);
+  }
+}
+
+function initPush() {
+  // A click on a notification opens /?knomad=…; consume it once so a reload
+  // later does not jump pages again.
+  openNotificationTarget(location.href);
+  if (location.search) history.replaceState({}, '', location.pathname + location.hash);
+
+  if (!pushSupported()) {
+    renderNotifyStatus();
+    return;
+  }
+
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const data = event.data || {};
+    if (data.type === 'knomad:open') openNotificationTarget(data.url);
+    if (data.type === 'knomad:resubscribe') {
+      ensurePushSubscription().then(() => {
+        renderNotifyStatus();
+        loadPushDevices();
+      });
+    }
+  });
+
+  registerServiceWorker().then(() => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      ensurePushSubscription().then(() => {
+        renderNotifyStatus();
+        loadPushDevices();
+      });
+    } else {
+      renderNotifyStatus();
+      loadPushDevices();
+    }
+  });
+}
+
+async function enableNotifications() {
   if (typeof Notification === 'undefined') {
     toast('Browser notifications are not supported here', 'error');
     renderNotifyStatus();
     return;
   }
-  if (Notification.permission === 'granted') {
-    toast('Browser reminders are already on');
-    renderNotifyStatus();
-    return;
-  }
   if (Notification.permission === 'denied') {
-    toast('Notifications are blocked in your browser settings', 'error');
+    toast('Notifications are blocked. Allow them for this site in Chrome, then reload.', 'error');
     renderNotifyStatus();
     return;
   }
 
-  try {
-    Notification.requestPermission().then((result) => {
-      renderNotifyStatus();
-      toast(
-        result === 'granted' ? 'Browser reminders enabled' : 'Browser reminders were not enabled',
-        result === 'granted' ? 'success' : 'error'
-      );
-    }).catch(() => {
-      renderNotifyStatus();
-      toast('Could not request notification permission', 'error');
-    });
-  } catch (err) {
+  let permission = Notification.permission;
+  if (permission !== 'granted') {
+    try {
+      permission = await Notification.requestPermission();
+    } catch (err) {
+      permission = 'default';
+    }
+  }
+
+  if (permission !== 'granted') {
     renderNotifyStatus();
-    toast('Browser notifications are not available here', 'error');
+    toast('Browser notifications were not enabled', 'error');
+    return;
+  }
+
+  if (!pushSupported()) {
+    renderNotifyStatus();
+    toast('Browser alerts on · in-app reminders still work');
+    return;
+  }
+
+  const registration = await registerServiceWorker();
+  if (!registration) {
+    renderNotifyStatus();
+    toast('Browser alerts on · the notification worker could not start', 'error');
+    return;
+  }
+
+  if (!cloudReady()) {
+    renderNotifyStatus();
+    toast('Browser alerts on · sign in to get pushes while knomad is closed');
+    return;
+  }
+
+  const subscription = await ensurePushSubscription();
+  renderNotifyStatus();
+  if (subscription) {
+    toast('Push notifications on · works with the tab closed', 'success');
+  } else {
+    toast('Browser alerts on · ' + (pushState.error || 'push is not configured in this build'), 'error');
+  }
+}
+
+async function sendPushTest() {
+  const button = $('#notifyTestBtn');
+  if (button) button.disabled = true;
+  try {
+    const result = await sendTestPush();
+    const sent = Number(result && result.sent) || 0;
+    toast(sent ? 'Test notification sent' : 'No subscribed browser answered · try re-enabling', sent ? 'success' : 'error');
+    if (!sent) renderNotifyStatus();
+  } catch (err) {
+    toast(err && err.message ? err.message : 'Could not send a test notification', 'error');
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -7305,29 +7605,67 @@ function renderNotifyStatus() {
   const status = $('#notifyStatus');
   const text = $('#notifyStatusText');
   const button = $('#notifyBtn');
+  const test = $('#notifyTestBtn');
 
   const supported = typeof Notification !== 'undefined';
   const permission = supported ? Notification.permission : 'unsupported';
+  const pushed = Boolean(pushState.subscription);
 
   if (status) status.classList.toggle('on', permission === 'granted');
 
   if (text) {
-    if (permission === 'granted') text.textContent = 'Browser notifications on';
-    else if (permission === 'denied') text.textContent = 'Browser notifications blocked';
+    if (permission === 'denied') text.textContent = 'Notifications blocked in your browser settings';
     else if (!supported) text.textContent = 'Browser notifications unavailable · in-app reminders still work';
+    else if (pushed) text.textContent = 'Push on · reminders, to-dos, and messages arrive with knomad closed';
+    else if (permission === 'granted' && !cloudReady()) text.textContent = 'Browser alerts on · sign in to get pushes while knomad is closed';
+    else if (permission === 'granted' && pushState.error) text.textContent = 'Browser alerts on · ' + pushState.error;
+    else if (permission === 'granted') text.textContent = 'Browser alerts on · in-app reminders still work';
     else text.textContent = 'Browser notifications off · in-app reminders still work';
   }
 
   if (button) {
     button.disabled = permission === 'granted' || permission === 'denied' || !supported;
     button.textContent = permission === 'granted'
-      ? 'Browser reminders enabled'
+      ? 'Notifications enabled'
       : permission === 'denied'
         ? 'Notifications blocked'
         : !supported
           ? 'Notifications unavailable'
           : 'Enable browser reminders';
   }
+
+  if (test) {
+    test.hidden = !pushed;
+    test.disabled = !pushed;
+  }
+}
+
+function renderNotifyDevices() {
+  const wrap = $('#notifyDevices');
+  const list = $('#notifyDeviceList');
+  if (!wrap || !list) return;
+
+  const devices = Array.isArray(pushState.devices) ? pushState.devices : [];
+  wrap.hidden = !devices.length;
+
+  list.innerHTML = devices.map((device) => {
+    const current = Boolean(device.id && device.id === pushState.currentId);
+    const meta = [
+      device.timezone,
+      device.lastSeenAt ? 'Last active ' + relativeDay(device.lastSeenAt) : ''
+    ].filter(Boolean).join(' · ');
+
+    return '<li class="notify-device">' +
+      '<div class="notify-device-main">' +
+        '<span class="notify-device-name"><strong>' + escapeHtml(device.name || 'Browser') + '</strong>' +
+          (current ? '<span class="notify-device-tag">This browser</span>' : '') +
+        '</span>' +
+        '<span class="notify-device-meta">' + escapeHtml(meta || 'Push enabled') + '</span>' +
+      '</div>' +
+      (current ? '' : '<button class="btn ghost small" type="button" data-remove-push="' +
+        escapeHtml(device.id) + '">Remove</button>') +
+    '</li>';
+  }).join('');
 }
 
 // ---------------------------------------------------------------- Settings
@@ -7442,6 +7780,7 @@ function renderSettings() {
   }
 
   renderNotifyStatus();
+  loadPushDevices();
 
   const dashActivityToggle = $('#dashActivityToggle');
   if (dashActivityToggle) dashActivityToggle.checked = dashActivity;
@@ -11842,6 +12181,18 @@ function bindEvents() {
   const notifyBtn = $('#notifyBtn');
   if (notifyBtn) notifyBtn.addEventListener('click', enableNotifications);
 
+  const notifyTestBtn = $('#notifyTestBtn');
+  if (notifyTestBtn) notifyTestBtn.addEventListener('click', sendPushTest);
+
+  const notifyDeviceList = $('#notifyDeviceList');
+  if (notifyDeviceList) {
+    notifyDeviceList.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-remove-push]');
+      if (!button) return;
+      removeNotifyDevice(button.dataset.removePush);
+    });
+  }
+
   const dashActivityToggle = $('#dashActivityToggle');
   if (dashActivityToggle) {
     dashActivityToggle.addEventListener('change', () => {
@@ -11964,6 +12315,7 @@ function init() {
   bindEvents();
   showPage('dashboard');
   startReminders();
+  initPush();
 
   window.__knomadReady = true;
   const bootError = document.getElementById('appBootError');

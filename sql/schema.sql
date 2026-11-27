@@ -437,3 +437,40 @@ create trigger knomad_projects_touch
   before update on public.knomad_projects
   for each row
   execute function public.knomad_bump_version();
+
+-- ---------------------------------------------------------------------------
+-- Web Push.
+--
+-- A browser subscribes once and the Function keeps the credentials, so a
+-- reminder, a due task, or an inbox reply can reach Chrome with no tab open.
+-- The endpoint is the browser's identity and is unique: signing in on the same
+-- browser re-points the row at the current account instead of duplicating it.
+--
+-- knomad_push_log is the dedupe lock. A notification is claimed with an insert
+-- before it is sent, so overlapping cron ticks or a retried delivery cannot
+-- send the same reminder twice.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.knomad_push_subscriptions (
+  endpoint     text        primary key,
+  user_id      text        not null,
+  p256dh       text        not null,
+  auth         text        not null,
+  timezone     text        not null default '',
+  user_agent   text        not null default '',
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists knomad_push_subscriptions_user_idx
+  on public.knomad_push_subscriptions (user_id, last_seen_at desc);
+
+create table if not exists public.knomad_push_log (
+  user_id    text        not null,
+  dedupe_key text        not null,
+  sent_at    timestamptz not null default now(),
+  primary key (user_id, dedupe_key)
+);
+
+create index if not exists knomad_push_log_sent_idx
+  on public.knomad_push_log (sent_at);

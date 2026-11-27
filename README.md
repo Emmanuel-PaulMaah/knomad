@@ -16,6 +16,7 @@ It works entirely offline on `localStorage`, and optionally syncs your profile, 
 | **Object Storage** | Private `resumes` bucket for original uploaded resume files, reachable only through presigned URLs |
 | **AI Gateway** | OpenAI-compatible `/v1/chat/completions`, used when you're signed in and have no local Gemini key |
 | **Realtime** | Live SQL subscription on the signed-in user's rows; the browser pulls or applies changes immediately |
+| **Function Trigger** | `knomad-push-tick` POSTs to `/push/run` every minute so reminders, due tasks, CRM follow-ups, and project targets are sent with no tab open |
 
 Sync rules:
 
@@ -231,16 +232,17 @@ Calendar items come from four places: application interviews/reminders, Together
 
 Each row's calendar icon opens Google Calendar with the title, time (or all-day date), and source already filled in. Each application-event row also has an **ICS** download, and **Export .ics** in the calendar header exports everything currently in view. These are one-way, per-click exports: edits or deletions in knomad do not update the copy elsewhere, so change it there too if plans change. Timed items are sent as one-hour blocks and use the browser's time zone.
 
-Reminders are checked while knomad is open:
+Reminders are checked while knomad is open, and pushed to Chrome when it is not:
 
 - An in-app toast fires when a reminder is due.
-- If you allow browser notifications in **Settings → Reminders**, you also get a system notification.
-- Reminders that came due while the page was closed fire on the next load, unless the event started more than 60 minutes ago.
-- Fired reminders are recorded under `knomad_notified` so the same reminder doesn't fire twice.
+- With **Settings → Reminders** enabled, the browser registers a Web Push subscription. The Function then sends a real notification for reminders, tasks that come due, CRM follow-ups, project targets, new shared jobs, replies, and kniggur requests — even with every knomad tab closed.
+- Reminders that came due while the page was closed fire on the next load, unless the event started more than 60 minutes ago. The push tick uses the same grace window. Date-only items (follow-ups and project targets) fire once at 09:00 in your time zone on the day itself.
+- **Subscribed browsers** under the reminder switch lists every device that receives pushes, with its time zone and last activity. The one you are using is tagged, and **Remove** drops an old device.
+- The page records fired reminders under `knomad_notified`; the Function records pushed ones in `knomad_push_log`, so neither side repeats one.
+- Every push notification opens knomad on the page it belongs to: the calendar for a reminder, To-dos for a due task, CRM for a follow-up, Projects for a target date, and the Kniggurs inbox for a job or reply.
+- **Send a test notification** in Settings proves the whole path without waiting for a reminder.
 
-To keep a reminder working while the tab is closed, use the **Add to Google Calendar** link or download the **.ics** file and import it into your calendar app.
-
-Browser notifications need a secure context (`https://` or `localhost`). On `file://` or when permission is blocked, knomad keeps working with in-app toasts.
+Push needs a secure context (`https://` or `localhost`), notification permission, a signed-in account, and VAPID keys on the branch (see [Neon setup](#neon-setup)). Without any of those, knomad falls back to in-app toasts and page-level notifications while the tab is open, and the **Add to Google Calendar** link and **.ics** download still work as an independent copy.
 
 ## AI mode vs. basic mode
 
@@ -273,10 +275,16 @@ npm run dev
 
 ```bash
 neon login                     # once per machine
-neon deploy --env .env.local   # provisions auth, functions, storage, gateway, realtime
-npm run db:setup               # applies sql/schema.sql
+npm run push:keys              # prints VAPID_* lines; paste them into .env.local
+neon deploy --env .env.local   # provisions auth, functions, storage, gateway, realtime, push tick
+npm run db:setup               # applies sql/schema.sql (including the push tables)
 npm run test                   # exercises every service end to end
+npm run test:push              # checks push encryption and headers locally
 ```
+
+`npm run push:keys` generates a VAPID key pair once. Keep it: changing either key invalidates every browser subscription, and each person has to enable notifications again. `neon deploy` fails on the default branch until both keys are in the env file it is given, because a Function without them cannot sign a push.
+
+If `neon deploy` reports `function triggers not available for this project`, deploy the Function alone with `neon functions deploy knomadsync --src src/function/index.ts --env KEY=VALUE` (one per Function secret) and retry once the project has Function Triggers. Without the trigger, inbox notifications still arrive immediately; reminders and due tasks only fire while a tab is open.
 
 `neon deploy` writes the branch's secrets to `.env.local`. Add the three public browser URLs to the same file:
 
@@ -315,10 +323,14 @@ knomad/
 ├── job-search.js         # Public job APIs, eligibility rules, token matching, no AI
 ├── sync.js               # Browser Neon Auth + Function + Realtime clients
 ├── neon.ts               # Neon branch policy (auth, functions, bucket, gateway, realtime)
-├── src/function/index.ts # knomadsync Hono API, JWT verification, Postgres/S3/AI/Realtime
-├── sql/schema.sql        # knomad_docs, friendships, presence, shared jobs, circles, tasks, projects, books, contacts
+├── src/function/index.ts # knomadsync Hono API, JWT verification, Postgres/S3/AI/Realtime/push
+├── src/function/push.ts  # Web Push encryption (RFC 8291) and VAPID signing (RFC 8292)
+├── public/sw.js          # Service worker: renders pushes, routes a click into the app
+├── sql/schema.sql        # knomad_docs, friendships, presence, shared jobs, circles, tasks, projects, books, contacts, push
 ├── scripts/setup-db.mjs  # Applies the schema
+├── scripts/gen-vapid.mjs # Prints a VAPID key pair for Web Push
 ├── scripts/test-services.mjs # End-to-end service proof
+├── scripts/test-push.mjs # Push encryption and header checks (no network)
 ├── scripts/test-job-search.mjs # Eligibility and role-matching tests
 ├── package.json          # Scripts and dependencies
 └── README.md
@@ -449,7 +461,7 @@ Stored under these `localStorage` keys:
 
 - The Gemini key is used only for direct calls from your browser to `generativelanguage.googleapis.com`. It is never included in a synced document.
 - When you sign in, profile and application documents (and uploaded resume files) are sent to your Neon branch. Row access is scoped by the verified JWT subject.
-- Friendships, pending requests, shared job leads, their reply threads, circles, task lists, projects, tasks, books, and contacts are stored in the same branch and scoped to the signed-in user. A friend can see your account name, email, profile headline, and the jobs, notes, replies, and circle tasks you share with them — nothing else from your workspace. Only the two people on a share can read or post in its thread; only circle members can read its lists and tasks.
+- Friendships, pending requests, shared job leads, their reply threads, circles, task lists, projects, tasks, books, and contacts are stored in the same branch and scoped to the signed-in user. Push subscriptions are stored with a push-service endpoint, two public encryption keys, and your time zone; the VAPID private key stays in the Function. A friend can see your account name, email, profile headline, and the jobs, notes, replies, and circle tasks you share with them — nothing else from your workspace. Only the two people on a share can read or post in its thread; only circle members can read its lists and tasks.
 - **Settings → Erase all local data** clears your workspace documents but does not remove friendships, shared jobs, circles, or shared tasks; remove friends individually in Together → Kniggurs, and archive circles on Together, if you want to disconnect.
 - Job URLs are sent to the reader services above when fetching a page.
 - **Settings → Export backup** writes a JSON file; **Erase all local data** removes local data and, when signed in, soft-deletes the cloud copies too.
@@ -465,7 +477,8 @@ Stored under these `localStorage` keys:
 - **Interview scoring is a heuristic writing signal** — it measures length, structure, specifics, and language, not the truth or quality of your experience. Treat it as a practice prompt, not a verdict.
 - **PDF and resume-file parsing load on demand** — jsPDF, pdf.js, and JSZip are bundled as separate chunks and fetched the first time you use them. When that fails, knomad falls back to printing or asks you to paste text.
 - **Profile autofill is heuristic** — it can miss a name on unusual layouts or grab the wrong line. Review the filled fields before saving, and use the **Fill profile** button after editing resume text.
-- **Reminders require knomad to be open** — there is no background service worker. Use **Add to Google Calendar** or the **.ics** download so a reminder still fires with the tab closed. System notifications also need notification permission and a secure context.
+- **Push needs the branch keys and a signed-in account** — with no VAPID keys, or while signed out, notifications only fire while the tab is open. Chrome must also be running: Web Push wakes a closed tab, not a closed browser profile that has been quit.
+- **The push tick runs every minute** — a reminder can arrive up to a minute after its time. Reminders and due tasks are deduped in `knomad_push_log`, so a tick that repeats or overlaps never sends one twice.
 - **A Next step date is tracked, not scheduled** — it sorts and marks the tracker, but only **Follow up in 7 days** (and scheduled events) put a date on the calendar.
 - **No recurring events** — each interview or reminder is a single date and time.
 - **No import** — backups can be exported but not restored in-app yet.

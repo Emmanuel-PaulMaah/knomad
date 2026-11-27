@@ -5,14 +5,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --port 5000",
+    "dev": "vite --port 8000",
     "build": "vite build",
     "preview": "vite preview --port 8000",
     "db:setup": "node --env-file=.env.local scripts/setup-db.mjs",
     "deploy": "neon deploy --env .env.local",
+    "push:keys": "node scripts/gen-vapid.mjs",
     "test": "node --env-file=.env.local scripts/test-services.mjs",
     "test:search": "node scripts/test-job-search.mjs",
-    "test:daily": "node scripts/test-daily-read.mjs"
+    "test:daily": "node scripts/test-daily-read.mjs",
+    "test:push": "node scripts/test-push.mjs"
   },
   "license": "ISC",
   "dependencies": {

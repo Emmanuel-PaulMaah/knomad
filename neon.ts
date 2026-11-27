@@ -26,7 +26,30 @@ export default defineConfig({
           value: process.env.NEON_REALTIME_SECRET,
           required: true,
         },
+        // Web Push signing. Generate a pair once with `npm run push:keys` and
+        // keep it stable: changing the keys invalidates every subscription.
+        // "default-branch" keeps preview branches deployable without push.
+        VAPID_PUBLIC_KEY: {
+          value: process.env.VAPID_PUBLIC_KEY,
+          required: "default-branch",
+        },
+        VAPID_PRIVATE_KEY: {
+          value: process.env.VAPID_PRIVATE_KEY,
+          required: "default-branch",
+        },
+        VAPID_SUBJECT: process.env.VAPID_SUBJECT || "mailto:hello@knomad.example",
       },
+    },
+  },
+
+  // The push tick sends reminders and due tasks with no browser open. It runs
+  // every minute so a reminder is punctual; knomad_push_log dedupes the send.
+  triggers: {
+    "knomad-push-tick": {
+      type: "schedule",
+      function: "knomadsync",
+      cron: "* * * * *",
+      functionPath: "/push/run",
     },
   },
 

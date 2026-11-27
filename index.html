@@ -4264,6 +4264,28 @@
     .status-line.on { color: var(--text-2); }
     .status-line.on .lamp { background: var(--accent); }
 
+    .notify-devices { display: grid; gap: 8px; margin-top: 18px; }
+    .notify-device-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    .notify-device {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .notify-device-main { display: grid; gap: 2px; min-width: 0; }
+    .notify-device-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .notify-device-name strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
+    .notify-device-tag {
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .notify-device-meta { color: var(--muted); font-size: 11.5px; }
+
     .danger-zone { border-color: rgba(207, 111, 95, 0.22); }
 
     /* ---------- Toasts ---------- */
@@ -5679,11 +5701,16 @@
                 <span class="label-mono">Interviews &amp; follow-ups</span>
               </div>
               <p style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px;">
-                Reminders appear as in-app alerts whenever knomad is open. Allow browser notifications to also see them outside the tab.
+                Turn on Chrome notifications for reminders and interviews, tasks that come due, CRM follow-ups, project targets, and new jobs or replies in your shared inbox. Signed in, these arrive even while knomad is closed; signed out, alerts only fire while this tab is open.
               </p>
               <div class="status-line" id="notifyStatus"><span class="lamp"></span><span id="notifyStatusText">Browser notifications off</span></div>
               <div class="modal-actions" style="justify-content: flex-start; margin-top: 16px;">
                 <button class="btn ghost" id="notifyBtn" type="button">Enable browser reminders</button>
+                <button class="btn subtle" id="notifyTestBtn" type="button" hidden>Send a test notification</button>
+              </div>
+              <div class="notify-devices" id="notifyDevices" hidden>
+                <span class="label-mono">Subscribed browsers</span>
+                <ul class="notify-device-list" id="notifyDeviceList"></ul>
               </div>
             </div>
 
@@ -5874,7 +5901,7 @@
                   </div>
                   <div class="event-form-actions">
                     <button class="btn subtle small" type="submit">Add to calendar</button>
-                    <span class="field-help">Reminders fire while knomad is open. Add to Google Calendar or download .ics so they still fire with the tab closed.</span>
+                    <span class="field-help">Reminders arrive as Chrome notifications when you are signed in and have push on, even with the tab closed. Add to Google Calendar or download .ics for a second copy.</span>
                   </div>
                 </form>
               </div>

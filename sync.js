@@ -311,3 +311,39 @@ export async function aiChat(prompt) {
   if (!data || typeof data.text !== "string") throw new Error("AI Gateway returned no text");
   return data.text;
 }
+
+// ---------------------------------------------------------------- push
+
+/**
+ * Web Push is server-sent: the browser registers a subscription and the
+ * Function stores it, so a reminder can arrive while the tab is closed.
+ * These calls carry the subscription only — the VAPID private key never
+ * leaves the Function.
+ */
+export async function fetchPushConfig() {
+  return api("/push/config");
+}
+
+export async function savePushSubscription(subscription, timezone) {
+  if (!subscription || !subscription.endpoint) throw new Error("No push subscription");
+  return api("/push/subscribe", {
+    method: "POST",
+    body: { subscription, timezone: timezone || "" },
+  });
+}
+
+export async function dropPushSubscription(endpoint) {
+  if (!endpoint) return null;
+  return api("/push/unsubscribe", { method: "POST", body: { endpoint } });
+}
+
+// Settings removes another browser by the opaque id from /push/config, so a
+// push endpoint never has to be handed to the page or kept in the DOM.
+export async function removePushDevice(id) {
+  if (!id) return null;
+  return api("/push/unsubscribe", { method: "POST", body: { id } });
+}
+
+export async function sendTestPush() {
+  return api("/push/test", { method: "POST" });
+}

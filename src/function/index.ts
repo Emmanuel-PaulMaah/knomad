@@ -8,11 +8,20 @@
  *   - AI Gateway  (NEON_AI_GATEWAY_*)     OpenAI-compatible chat completions
  *   - Realtime    (NEON_REALTIME_SECRET)  seals a user-scoped live query
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { Pool } from "pg";
-import { attachDatabasePool } from "@neon/functions";
+import { attachDatabasePool, waitUntil } from "@neon/functions";
+import { parseTriggerDelivery } from "@neon/functions/triggers";
+import {
+  pushConfigured,
+  vapidPublicKey,
+  sendWebPush,
+  formatWhen,
+  type PushSubscriptionRecord,
+  type PushMessage,
+} from "./push";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -1160,6 +1169,305 @@ function conflict(current: unknown): never {
   );
 }
 
+// ---------------------------------------------------------------- push
+
+// One notification is worth a 120-character line; the app shows the rest.
+function clip(value: unknown, max: number): string {
+  const text = cleanText(value, max + 1);
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + "…" : text;
+}
+
+type StoredSubscription = PushSubscriptionRecord & { timezone: string };
+
+/**
+ * Settings lists a browser by this digest, not by its endpoint. The endpoint is
+ * the push service's capability URL, so it stays on the server; the digest is
+ * stable enough to identify the row someone wants to remove.
+ */
+function subscriptionId(endpoint: string): string {
+  return createHash("sha256").update(String(endpoint)).digest("base64url");
+}
+
+// A readable name for a stored subscription. The user agent is the only thing
+// the browser tells us, and it is enough to tell a phone from a laptop.
+function deviceLabel(userAgent: unknown): string {
+  const ua = String(userAgent || "");
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Firefox\//.test(ua)
+      ? "Firefox"
+      : /Chrome\//.test(ua)
+        ? "Chrome"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "Browser";
+  const system = /Windows/.test(ua)
+    ? "Windows"
+    : /Android/.test(ua)
+      ? "Android"
+      : /iPhone|iPad|iPod/.test(ua)
+        ? "iOS"
+        : /Mac OS X|Macintosh/.test(ua)
+          ? "macOS"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "";
+  return system ? browser + " on " + system : browser;
+}
+
+async function subscriptionsFor(userId: string): Promise<StoredSubscription[]> {
+  const { rows } = await pool.query(
+    `select endpoint, p256dh, auth, timezone
+       from public.knomad_push_subscriptions
+      where user_id = $1
+      order by last_seen_at desc
+      limit 25`,
+    [userId],
+  );
+  return rows as StoredSubscription[];
+}
+
+async function dropSubscription(endpoint: string) {
+  await pool.query(`delete from public.knomad_push_subscriptions where endpoint = $1`, [endpoint]);
+}
+
+/**
+ * Send one notification to every browser this account has subscribed. A
+ * subscription the push service reports gone is deleted so the next tick does
+ * not keep retrying a dead endpoint.
+ */
+async function pushToUser(userId: string, message: PushMessage): Promise<number> {
+  if (!pushConfigured()) return 0;
+
+  const subscriptions = await subscriptionsFor(userId);
+  if (!subscriptions.length) return 0;
+
+  const results = await Promise.all(
+    subscriptions.map(async (subscription) => {
+      try {
+        const result = await sendWebPush(
+          { endpoint: subscription.endpoint, p256dh: subscription.p256dh, auth: subscription.auth },
+          message,
+        );
+        if (result.gone) await dropSubscription(subscription.endpoint);
+        else if (!result.ok) console.warn("knomad push rejected", result.status, result.error);
+        return result.ok;
+      } catch (error) {
+        console.error("knomad push failed", error);
+        return false;
+      }
+    }),
+  );
+
+  return results.filter(Boolean).length;
+}
+
+// Never let a notification delay the response that triggered it, and never let
+// it turn a successful share or reply into an error.
+function pushInBackground(task: Promise<unknown>) {
+  waitUntil(task.catch((error) => console.error("knomad push", error)));
+}
+
+async function timezoneMap(): Promise<Map<string, string>> {
+  const { rows } = await pool.query(
+    `select distinct on (user_id) user_id, timezone
+       from public.knomad_push_subscriptions
+      order by user_id, last_seen_at desc`,
+  );
+  const map = new Map<string, string>();
+  for (const row of rows) map.set(row.user_id, row.timezone || "UTC");
+  return map;
+}
+
+// Date-only items fire at 09:00 local, the hour the app uses for all-day
+// tasks, so the tick has to know the user's calendar day and hour.
+function localDateHour(timezone: string, when: number): { date: string; hour: number } {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(when));
+    const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+    return {
+      date: `${get("year")}-${get("month")}-${get("day")}`,
+      hour: Number(get("hour")) % 24,
+    };
+  } catch {
+    // A stored timezone can be garbage; UTC still has to work.
+    return localDateHour("UTC", when);
+  }
+}
+
+/**
+ * The cron tick: reminders from application documents, tasks that just came
+ * due, CRM follow-up dates, and project target dates. Timed items use the same
+ * grace window the page does; date-only items fire at 09:00 local on the day
+ * itself. A dedupe row in knomad_push_log makes sure a reminder pushed at 09:00
+ * is not pushed again at 09:01.
+ */
+async function runPushTick(): Promise<{ sent: number; candidates: number; skipped?: string }> {
+  if (!pushConfigured()) return { sent: 0, candidates: 0, skipped: "push is not configured" };
+
+  const now = Date.now();
+  const zones = await timezoneMap();
+  const candidates: Array<{ userId: string; key: string; message: PushMessage }> = [];
+
+  const docs = await pool.query(
+    `select user_id, doc_id, payload
+       from public.knomad_docs
+      where kind = 'application' and deleted_at is null`,
+  );
+
+  for (const row of docs.rows) {
+    const payload = (row.payload || {}) as Record<string, unknown>;
+    const events = Array.isArray(payload.events) ? payload.events : [];
+
+    for (const raw of events) {
+      const event = (raw || {}) as Record<string, unknown>;
+      const at = Date.parse(String(event.at || ""));
+      if (!Number.isFinite(at)) continue;
+
+      const minutes = Number(event.reminder);
+      const reminderAt = at - (Number.isFinite(minutes) ? minutes * 60_000 : 0);
+      if (now < reminderAt) continue;
+      // An event that started more than an hour ago is history, not a reminder.
+      if (now - at > 60 * 60_000) continue;
+
+      const context =
+        [cleanText(payload.company, 120), cleanText(payload.position, 120)].filter(Boolean).join(" · ") ||
+        "Your application";
+      const when = formatWhen(String(event.at), zones.get(row.user_id) || "UTC");
+
+      candidates.push({
+        userId: row.user_id,
+        key: "reminder:" + row.doc_id + ":" + String(event.id) + ":" + reminderAt,
+        message: {
+          title: "knomad · " + (event.kind === "interview" ? "Interview reminder" : "Reminder"),
+          body: [cleanText(event.title, 140), context, when].filter(Boolean).join(" — "),
+          url: "/?knomad=calendar",
+          tag: "reminder-" + row.doc_id + "-" + String(event.id),
+          kind: "reminder",
+        },
+      });
+    }
+  }
+
+  const tasks = await pool.query(
+    `select id::text as id, owner_id, assignee_id, title, due_at, due_all_day
+       from public.knomad_tasks
+      where deleted_at is null
+        and status <> 'done'
+        and due_at is not null
+        and due_at <= now()
+        and due_at > now() - interval '2 hours'`,
+  );
+
+  for (const task of tasks.rows) {
+    const userId = task.assignee_id || task.owner_id;
+    const when = task.due_all_day ? "" : formatWhen(task.due_at.toISOString(), zones.get(userId) || "UTC");
+
+    candidates.push({
+      userId,
+      key: "task:" + task.id + ":" + task.due_at.toISOString(),
+      message: {
+        title: "knomad · Task due",
+        body: [cleanText(task.title, 140), when].filter(Boolean).join(" — ") || "A task in Together is due",
+        url: "/?knomad=together&tab=todos",
+        tag: "task-" + task.id,
+        kind: "task",
+      },
+    });
+  }
+
+  const contacts = await pool.query(
+    `select id::text as id, owner_id, name, company, role,
+            next_follow_up_on::text as follow_up_on
+       from public.knomad_contacts
+      where deleted_at is null
+        and next_follow_up_on is not null
+        and next_follow_up_on between current_date - 2 and current_date + 2`,
+  );
+
+  for (const contact of contacts.rows) {
+    const local = localDateHour(zones.get(contact.owner_id) || "UTC", now);
+    if (local.hour < 9 || contact.follow_up_on !== local.date) continue;
+
+    const context = [cleanText(contact.company, 120), cleanText(contact.role, 120)]
+      .filter(Boolean)
+      .join(" · ");
+
+    candidates.push({
+      userId: contact.owner_id,
+      key: "crm:" + contact.id + ":" + contact.follow_up_on,
+      message: {
+        title: "knomad · CRM follow-up",
+        body: [cleanText(contact.name, 120) || "A contact", context, "Follow up today"]
+          .filter(Boolean)
+          .join(" — "),
+        url: "/?knomad=together&tab=crm",
+        tag: "crm-" + contact.id,
+        kind: "crm",
+      },
+    });
+  }
+
+  const projects = await pool.query(
+    `select id::text as id, owner_id, name, target_on::text as target_on
+       from public.knomad_projects
+      where deleted_at is null
+        and target_on is not null
+        and status <> 'done'
+        and target_on between current_date - 2 and current_date + 2`,
+  );
+
+  for (const project of projects.rows) {
+    const local = localDateHour(zones.get(project.owner_id) || "UTC", now);
+    if (local.hour < 9 || project.target_on !== local.date) continue;
+
+    candidates.push({
+      userId: project.owner_id,
+      key: "project:" + project.id + ":" + project.target_on,
+      message: {
+        title: "knomad · Project target today",
+        body: (cleanText(project.name, 140) || "A project") + " — target date is today",
+        url: "/?knomad=together&tab=projects",
+        tag: "project-" + project.id,
+        kind: "project",
+      },
+    });
+  }
+
+  if (!candidates.length) return { sent: 0, candidates: 0 };
+
+  // Claim before sending: the insert is the lock, so overlapping ticks (or a
+  // retried delivery) cannot notify the same reminder twice.
+  const claimed = await pool.query(
+    `insert into public.knomad_push_log (user_id, dedupe_key)
+     select * from unnest($1::text[], $2::text[])
+     on conflict do nothing
+     returning user_id, dedupe_key`,
+    [candidates.map((candidate) => candidate.userId), candidates.map((candidate) => candidate.key)],
+  );
+  const fresh = new Set(claimed.rows.map((row) => row.user_id + ":" + row.dedupe_key));
+
+  let sent = 0;
+  for (const candidate of candidates) {
+    if (!fresh.has(candidate.userId + ":" + candidate.key)) continue;
+    try {
+      sent += await pushToUser(candidate.userId, candidate.message);
+    } catch (error) {
+      console.error("knomad push tick failed", error);
+    }
+  }
+
+  await pool.query(`delete from public.knomad_push_log where sent_at < now() - interval '30 days'`);
+  return { sent, candidates: candidates.length };
+}
+
 // ---------------------------------------------------------------- routes
 
 app.get("/", (c) => c.text("knomad sync API"));
@@ -1173,9 +1481,138 @@ app.get("/health", (c) =>
       storage: Boolean(process.env.AWS_ENDPOINT_URL_S3 && process.env.AWS_ACCESS_KEY_ID),
       aiGateway: Boolean(process.env.NEON_AI_GATEWAY_BASE_URL),
       realtime: Boolean(process.env.NEON_REALTIME_SECRET),
+      push: pushConfigured(),
     },
   }),
 );
+
+// ---------------------------------------------------------------- push routes
+
+app.get("/push/config", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const { rows } = await pool.query(
+    `select endpoint, timezone, user_agent, last_seen_at
+       from public.knomad_push_subscriptions
+      where user_id = $1
+      order by last_seen_at desc
+      limit 25`,
+    [userId],
+  );
+  return c.json({
+    enabled: pushConfigured(),
+    publicKey: vapidPublicKey(),
+    subscriptions: rows.length,
+    devices: rows.map((row: any) => ({
+      id: subscriptionId(row.endpoint),
+      name: deviceLabel(row.user_agent),
+      timezone: row.timezone || "",
+      lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+    })),
+  });
+});
+
+app.post("/push/subscribe", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const body = (await c.req.json().catch(() => ({}))) as {
+    subscription?: { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+    timezone?: unknown;
+  };
+
+  const endpoint = cleanText(body?.subscription?.endpoint, 1200);
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new HttpError(400, "subscription.endpoint must be a URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new HttpError(400, "subscription.endpoint must be https");
+  }
+
+  const p256dh = cleanText(body?.subscription?.keys?.p256dh, 200);
+  const auth = cleanText(body?.subscription?.keys?.auth, 100);
+  if (!p256dh || !auth) throw new HttpError(400, "subscription.keys.p256dh and auth are required");
+
+  const timezone = cleanText(body?.timezone, 64);
+
+  // The endpoint is the browser's identity. Re-pointing it at the signed-in
+  // account is what makes a shared device stop notifying the previous user.
+  await pool.query(
+    `insert into public.knomad_push_subscriptions
+       (endpoint, user_id, p256dh, auth, timezone, user_agent)
+     values ($1, $2, $3, $4, $5, $6)
+     on conflict (endpoint) do update
+        set user_id = excluded.user_id,
+            p256dh = excluded.p256dh,
+            auth = excluded.auth,
+            timezone = excluded.timezone,
+            user_agent = excluded.user_agent,
+            last_seen_at = now()`,
+    [endpoint, userId, p256dh, auth, timezone, cleanText(c.req.header("user-agent"), 240)],
+  );
+
+  await pool.query(
+    `delete from public.knomad_push_subscriptions
+      where user_id = $1
+        and endpoint not in (
+          select endpoint from public.knomad_push_subscriptions
+           where user_id = $1
+           order by last_seen_at desc
+           limit 25
+        )`,
+    [userId],
+  );
+
+  return c.json({ ok: true });
+});
+
+app.post("/push/unsubscribe", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const body = (await c.req.json().catch(() => ({}))) as { endpoint?: unknown; id?: unknown };
+  let endpoint = cleanText(body?.endpoint, 1200);
+  const id = cleanText(body?.id, 100);
+  if (!endpoint && !id) throw new HttpError(400, "endpoint or id is required");
+
+  // A device in Settings is removed by its opaque digest, so the browser's
+  // push endpoint never has to leave the server.
+  if (!endpoint && id) {
+    const { rows } = await pool.query(
+      `select endpoint from public.knomad_push_subscriptions where user_id = $1`,
+      [userId],
+    );
+    endpoint = rows.find((row: any) => subscriptionId(row.endpoint) === id)?.endpoint || "";
+  }
+  if (!endpoint) return c.json({ ok: true, removed: false });
+
+  const removed = await pool.query(
+    `delete from public.knomad_push_subscriptions where endpoint = $1 and user_id = $2`,
+    [endpoint, userId],
+  );
+  return c.json({ ok: true, removed: removed.rowCount === 1 });
+});
+
+app.post("/push/test", async (c) => {
+  const userId = await requireUser(c.req.header("authorization"));
+  const sent = await pushToUser(userId, {
+    title: "knomad · notifications are on",
+    body: "This is a test push. Reminders, due tasks, follow-ups, and inbox updates arrive here.",
+    url: "/?knomad=dashboard",
+    tag: "knomad-test",
+    kind: "test",
+  });
+  return c.json({ sent });
+});
+
+// Neon POSTs this path on the trigger declared in neon.ts. It carries no user
+// token, so the delivery itself is what is verified.
+app.post("/push/run", async (c) => {
+  const parsed = await parseTriggerDelivery(c.req.raw);
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.error === "invalid_body" ? 400 : 401);
+  }
+  const summary = await runPushTick();
+  return c.json({ ok: true, ...summary });
+});
 
 app.get("/me", async (c) => {
   const userId = await requireUser(c.req.header("authorization"));
@@ -1227,6 +1664,16 @@ app.post("/friends/request", async (c) => {
   );
   if (reverse.rowCount) {
     await addFriendship(userId, targetId);
+    const people = await loadUsers([userId]);
+    pushInBackground(
+      pushToUser(targetId, {
+        title: "knomad · Request accepted",
+        body: (people.get(userId)?.name || "Your new kniggur") + " is now one of your kniggurs",
+        url: "/?knomad=together&tab=kniggurs",
+        tag: "friend-accepted-" + userId,
+        kind: "friend",
+      }),
+    );
     return c.json({ status: "accepted", userId: targetId });
   }
 
@@ -1249,6 +1696,18 @@ app.post("/friends/request", async (c) => {
      values ($1, $2, $3)`,
     [id, userId, targetId],
   );
+
+  const people = await loadUsers([userId]);
+  pushInBackground(
+    pushToUser(targetId, {
+      title: "knomad · New kniggur request",
+      body: (people.get(userId)?.name || "Someone") + " wants to connect with you",
+      url: "/?knomad=together&tab=kniggurs",
+      tag: "friend-request-" + id,
+      kind: "friend",
+    }),
+  );
+
   return c.json({ status: "requested", id });
 });
 
@@ -1273,7 +1732,21 @@ app.post("/friends/respond", async (c) => {
   );
   if (!updated.rowCount) throw new HttpError(404, "That request is no longer pending");
 
-  if (action === "accept") await addFriendship(userId, updated.rows[0].from_user);
+  if (action === "accept") {
+    const requesterId = updated.rows[0].from_user as string;
+    await addFriendship(userId, requesterId);
+
+    const people = await loadUsers([userId]);
+    pushInBackground(
+      pushToUser(requesterId, {
+        title: "knomad · Request accepted",
+        body: (people.get(userId)?.name || "They") + " is now one of your kniggurs",
+        url: "/?knomad=together&tab=kniggurs",
+        tag: "friend-accepted-" + userId,
+        kind: "friend",
+      }),
+    );
+  }
   return c.json({ status: action === "accept" ? "accepted" : "declined" });
 });
 
@@ -1353,7 +1826,19 @@ app.post("/shares", async (c) => {
     [id, userId, toUserId, company, position, url, note, jobDescription],
   );
 
-  const users = await loadUsers([toUserId]);
+  const users = await loadUsers([toUserId, userId]);
+
+  const senderName = users.get(userId)?.name || "A kniggur";
+  pushInBackground(
+    pushToUser(toUserId, {
+      title: "knomad · Job from " + senderName,
+      body: [company, position].filter(Boolean).join(" · ") || clip(note, 120) || "A job lead is waiting in your inbox",
+      url: "/?knomad=together&tab=kniggurs",
+      tag: "share-" + id,
+      kind: "share",
+    }),
+  );
+
   return c.json({
     share: {
       id,
@@ -1407,7 +1892,7 @@ app.post("/shares/:id/messages", async (c) => {
   if (!text) throw new HttpError(400, "Write a reply first");
 
   const share = await pool.query(
-    `select 1
+    `select from_user, to_user, company, position
        from public.knomad_shares
       where id = $1::uuid and (from_user = $2 or to_user = $2)`,
     [id, userId],
@@ -1437,6 +1922,21 @@ app.post("/shares/:id/messages", async (c) => {
         set read_at = now()
       where share_id = $1::uuid and author_id <> $2 and read_at is null`,
     [id, userId],
+  );
+
+  const thread = share.rows[0] as { from_user: string; to_user: string; company: string; position: string };
+  const otherId = thread.from_user === userId ? thread.to_user : thread.from_user;
+  const people = await loadUsers([userId]);
+  const jobLabel = [thread.company, thread.position].filter(Boolean).join(" · ");
+
+  pushInBackground(
+    pushToUser(otherId, {
+      title: "knomad · " + (people.get(userId)?.name || "A kniggur") + " replied",
+      body: [clip(text, 120), jobLabel].filter(Boolean).join(" — "),
+      url: "/?knomad=together&tab=kniggurs",
+      tag: "share-thread-" + id,
+      kind: "message",
+    }),
   );
 
   return c.json({
