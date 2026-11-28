@@ -738,6 +738,7 @@
     .upcoming-pill.task { color: var(--sage); }
     .upcoming-pill.crm { color: var(--amber); }
     .upcoming-pill.project { color: var(--amber); }
+    .upcoming-pill.milestone { color: var(--accent); }
 
     .event-kind {
       flex-shrink: 0;
@@ -3722,6 +3723,20 @@
 
     .project-milestone-due { flex-shrink: 0; color: var(--muted); font-size: 10.5px; }
 
+    .project-task-promote {
+      flex-shrink: 0;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9.5px;
+      cursor: pointer;
+    }
+
+    .project-task-promote:hover { color: var(--accent); border-color: var(--accent); }
+
     .project-modal-section {
       margin-top: 22px;
       padding-top: 16px;
@@ -4202,10 +4217,13 @@
     }
 
     .event-kind.task { background: var(--sage); }
+    .event-kind.milestone { background: var(--accent); }
     .event-kind.project { background: var(--amber); }
 
     .cal-dot.task { background: var(--sage); }
     .cal-dot.task.done { opacity: 0.4; }
+    .cal-dot.milestone { background: var(--accent); }
+    .cal-dot.milestone.done { opacity: 0.4; }
     .cal-dot.project { background: var(--amber); }
     .cal-dot.project.done { opacity: 0.4; }
 
@@ -5211,7 +5229,7 @@
                         <input id="projectTargetNew" type="date">
                       </div>
                     </div>
-                    <p class="field-help">Projects hold tasks and milestones. A milestone counts toward the progress bar.</p>
+                    <p class="field-help">Milestones are checkpoints: they belong to this project, drive the progress bar, and never appear in To-dos. Tasks are work items; attach them from To-dos or promote one here.</p>
                     <button class="btn primary small" type="submit">
                       <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>
                       Add project
@@ -6212,7 +6230,7 @@
           <span class="label-mono" id="projectTaskCount"></span>
         </div>
         <div id="projectTasks"></div>
-        <p class="field-help">Assign a task to this project from the To-dos tab.</p>
+        <p class="field-help">Tasks assigned to this project stay in To-dos. Milestones are checkpoints and drive the progress bar.</p>
       </div>
     </div>
   </div>

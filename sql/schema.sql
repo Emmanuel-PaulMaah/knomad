@@ -267,6 +267,31 @@ alter table public.knomad_tasks
 alter table public.knomad_tasks
   add column if not exists is_milestone boolean not null default false;
 
+-- A milestone is a project checkpoint, not a to-do: it must belong to a project
+-- and never to a list or an assignee. Clean up rows written before the rule,
+-- then constrain new writes. NOT VALID keeps the migration safe if anything is
+-- left behind; the API also repairs a milestone whenever it is edited.
+update public.knomad_tasks
+   set is_milestone = false
+ where is_milestone and project_id is null;
+
+update public.knomad_tasks
+   set list_id = null, assignee_id = null
+ where is_milestone and (list_id is not null or assignee_id is not null);
+
+do $$
+begin
+  alter table public.knomad_tasks
+    add constraint knomad_tasks_milestone_shape
+    check (
+      not is_milestone
+      or (project_id is not null and list_id is null and assignee_id is null)
+    )
+    not valid;
+exception
+  when duplicate_object then null;
+end $$;
+
 create index if not exists knomad_tasks_list_idx
   on public.knomad_tasks (list_id, position, created_at);
 

@@ -633,6 +633,56 @@ async function main() {
         body: JSON.stringify({ title: "E2E orphan milestone", isMilestone: true }),
       });
 
+      const milestoneWithList = project && sharedList
+        ? await jsonFetch(fn + "/tasks", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E milestone in list",
+              projectId: project.id,
+              circleId: circle.id,
+              listId: sharedList.id,
+              isMilestone: true,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const milestoneWithAssignee = project
+        ? await jsonFetch(fn + "/tasks", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E assigned milestone",
+              projectId: project.id,
+              circleId: circle.id,
+              assigneeId: memberId,
+              isMilestone: true,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+
+      const promotableRes = project && sharedList
+        ? await jsonFetch(fn + "/tasks", {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "E2E promote me",
+              projectId: project.id,
+              circleId: circle.id,
+              listId: sharedList.id,
+              assigneeId: memberId,
+            }),
+          })
+        : { response: { ok: false }, body: null };
+      const promotable = promotableRes.body?.task || null;
+      const promoted = promotable
+        ? await jsonFetch(fn + "/tasks/" + encodeURIComponent(promotable.id), {
+            method: "PATCH",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ isMilestone: true, version: promotable.version }),
+          })
+        : { response: { ok: false }, body: null };
+
       const categoryRes = circle
         ? await jsonFetch(fn + "/shelf-categories", {
             method: "POST",
@@ -819,6 +869,12 @@ async function main() {
         milestone?.projectId === project?.id &&
         milestone?.isMilestone === true &&
         invalidMilestone.response.status === 400 &&
+        milestoneWithList.response.status === 400 &&
+        milestoneWithAssignee.response.status === 400 &&
+        promoted.response.ok &&
+        promoted.body?.task?.isMilestone === true &&
+        promoted.body?.task?.listId === null &&
+        promoted.body?.task?.assigneeId === null &&
         seenProject?.version === project?.version &&
         seenMilestone?.version === milestone?.version &&
         milestoneDone.response.ok &&

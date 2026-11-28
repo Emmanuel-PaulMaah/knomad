@@ -2543,11 +2543,18 @@ app.post("/tasks", async (c) => {
 
   const isMilestone = Boolean(body?.isMilestone);
   if (isMilestone && !projectId) throw new HttpError(400, "A milestone needs a project");
+  if (isMilestone && listId) {
+    throw new HttpError(400, "A milestone is a project checkpoint, not a list item");
+  }
+  const assigneeInput = optionalUuidField(body?.assigneeId, "assigneeId");
+  if (isMilestone && assigneeInput) {
+    throw new HttpError(400, "A milestone cannot be assigned to a person");
+  }
 
   if (circleId) await requireCircleMember(circleId, userId);
 
   const assigneeId = await assertAssignee(
-    optionalUuidField(body?.assigneeId, "assigneeId"),
+    assigneeInput,
     circleId,
     userId,
     userId,
@@ -2665,6 +2672,18 @@ app.patch("/tasks/:id", async (c) => {
   if (body?.isMilestone === true && !projectId) {
     throw new HttpError(400, "A milestone needs a project");
   }
+  if (isMilestone && body?.listId !== undefined && listId) {
+    throw new HttpError(400, "A milestone is a project checkpoint, not a list item");
+  }
+  const explicitAssignee = body?.assigneeId !== undefined
+    ? optionalUuidField(body.assigneeId, "assigneeId")
+    : null;
+  if (isMilestone && explicitAssignee) {
+    throw new HttpError(400, "A milestone cannot be assigned to a person");
+  }
+  // A milestone is a project checkpoint, so it never lives in a list. Clearing
+  // list_id here also repairs rows that became milestones before this rule.
+  if (isMilestone) listId = null;
 
   const sets: string[] = [];
   const params: unknown[] = [taskId, version, userId];
@@ -2707,10 +2726,12 @@ app.patch("/tasks/:id", async (c) => {
   if (body?.isMilestone !== undefined || isMilestone !== Boolean(task.is_milestone)) {
     set("is_milestone", isMilestone);
   }
-  if (body?.assigneeId !== undefined) {
+  if (isMilestone) {
+    if (task.assignee_id) set("assignee_id", null);
+  } else if (body?.assigneeId !== undefined) {
     set(
       "assignee_id",
-      await assertAssignee(optionalUuidField(body.assigneeId, "assigneeId"), circleId, userId, task.owner_id),
+      await assertAssignee(explicitAssignee, circleId, userId, task.owner_id),
     );
   } else if (circleId !== task.circle_id && task.assignee_id) {
     // Moving scopes must not strand the task on an assignee who cannot see it.

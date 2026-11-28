@@ -1810,7 +1810,7 @@ function renderStatusChart(applications) {
     if (counts[app.status] != null) counts[app.status] += 1;
   });
 
-  const tasks = state.space.tasks || [];
+  const tasks = (state.space.tasks || []).filter((task) => !task.isMilestone);
   const books = state.space.books || [];
   const openTasks = tasks.filter((task) => task.status !== 'done').length;
   const doneTasks = tasks.length - openTasks;
@@ -2242,6 +2242,9 @@ function upcomingPill(item) {
   } else if (item.source === 'task') {
     label = 'To-do';
     tone = 'task';
+  } else if (item.source === 'milestone') {
+    label = 'Milestone';
+    tone = 'milestone';
   } else if (item.source === 'crm') {
     label = 'Follow-up';
     tone = 'crm';
@@ -2261,6 +2264,10 @@ function upcomingSubtitle(item) {
     const where = list ? list.name : (item.circleId ? circleName(item.circleId) : 'Personal to-do');
     return escapeHtml(where) + (task.assigneeId ? ' · ' + personNameHtml(task.assigneeId) : '');
   }
+  if (item.source === 'milestone') {
+    const project = item.projectId ? findProject(item.projectId) : null;
+    return escapeHtml((project ? project.name : 'Project') + ' · Milestone');
+  }
   if (item.source === 'crm') {
     const contact = item.contact || {};
     const where = item.circleId ? circleName(item.circleId) : 'Personal contact';
@@ -2279,6 +2286,8 @@ function upcomingRowHtml(item) {
     action = 'data-view="' + escapeHtml(item.app.id) + '"';
   } else if (item.source === 'task') {
     action = 'data-cal-task-open="' + escapeHtml(item.sourceId) + '"';
+  } else if (item.source === 'milestone') {
+    action = 'data-cal-project-open="' + escapeHtml(item.projectId || '') + '"';
   } else if (item.source === 'crm') {
     action = 'data-cal-contact-open="' + escapeHtml(item.sourceId) + '"';
   } else {
@@ -2320,7 +2329,7 @@ function renderUpcoming() {
 function togetherDashDueTasks() {
   const tomorrow = startOfDay(new Date()).getTime() + DAY_MS;
   return state.space.tasks
-    .filter((task) => task.status !== 'done' && task.dueAt)
+    .filter((task) => !task.isMilestone && task.status !== 'done' && task.dueAt)
     .filter((task) => {
       const at = new Date(task.dueAt).getTime();
       return Number.isFinite(at) && at < tomorrow;
@@ -2371,7 +2380,7 @@ function renderTogetherDash() {
   const due = togetherDashDueTasks();
   const projectTargets = togetherDashProjectTargets();
   const followUps = togetherDashFollowUps();
-  const open = state.space.tasks.filter((task) => task.status !== 'done').length;
+  const open = state.space.tasks.filter((task) => !task.isMilestone && task.status !== 'done').length;
   const contacts = state.space.contacts.length;
   const circles = state.space.circles;
 
@@ -3079,7 +3088,8 @@ function renderCalendar() {
 
     const dots = dayItems.slice(0, 3)
       .map((item) => '<span class="cal-dot' +
-        (item.source === 'task' ? ' task' : item.source === 'crm' ? ' crm' :
+        (item.source === 'task' ? ' task' : item.source === 'milestone' ? ' milestone' :
+          item.source === 'crm' ? ' crm' :
           item.source === 'project' ? ' project' : item.kind === 'reminder' ? ' reminder' : '') +
         (item.done ? ' done' : '') + '"></span>')
       .join('');
@@ -9115,7 +9125,7 @@ function renderTogetherBadge() {
   const tomorrow = startOfDay(new Date()).getTime() + DAY_MS;
   const taskCount = cloudReady()
     ? state.space.tasks.filter((task) => {
-        if (task.status === 'done' || !task.dueAt) return false;
+        if (task.isMilestone || task.status === 'done' || !task.dueAt) return false;
         const at = new Date(task.dueAt).getTime();
         return Number.isFinite(at) && at < tomorrow;
       }).length
@@ -9201,7 +9211,7 @@ function renderTogether() {
   if (!socialThreadFocused()) renderFriends();
 
   const circle = togetherScope === 'me' ? null : circleById(togetherScope);
-  const open = scopeTasks().filter((task) => task.status !== 'done').length;
+  const open = scopeTasks().filter((task) => !task.isMilestone && task.status !== 'done').length;
   if (summary) {
     if (state.space.status === 'loading' && !state.space.loaded) {
       summary.textContent = 'Loading your space…';
@@ -9392,7 +9402,7 @@ function renderTodos() {
 
   const lists = scopeLists();
   const projects = scopeProjects();
-  const tasks = scopeTasks();
+  const tasks = scopeTasks().filter((task) => !task.isMilestone);
   const open = tasks.filter((task) => task.status !== 'done').length;
 
   const listCount = $('#spaceListCount');
@@ -9565,13 +9575,22 @@ function projectMilestones(projectId) {
 function projectProgress(project) {
   const tasks = projectTasks(project.id);
   const milestones = tasks.filter((task) => task.isMilestone);
-  const basis = milestones.length ? milestones : tasks;
-  const done = basis.filter((task) => task.status === 'done').length;
+  const workTasks = tasks.filter((task) => !task.isMilestone);
+  const doneMilestones = milestones.filter((task) => task.status === 'done').length;
+  const doneTasks = workTasks.filter((task) => task.status === 'done').length;
+  // A milestone is the checkpoint; work tasks never stand in for one. A project
+  // with no milestones falls back to task progress, labelled as such.
+  const basis = milestones.length ? milestones : workTasks;
+  const done = milestones.length ? doneMilestones : doneTasks;
   return {
     done,
     total: basis.length,
     percent: basis.length ? Math.round((done / basis.length) * 100) : 0,
-    milestones: milestones.length > 0
+    milestones: milestones.length > 0,
+    doneMilestones,
+    totalMilestones: milestones.length,
+    doneTasks,
+    totalTasks: workTasks.length
   };
 }
 
@@ -9639,16 +9658,21 @@ function renderProjects() {
   host.innerHTML = projects.map((project) => {
     const progress = projectProgress(project);
     const milestones = projectMilestones(project.id);
-    const tasks = projectTasks(project.id);
+    const tasks = projectTasks(project.id).filter((task) => !task.isMilestone);
     const checklist = milestones.length
       ? milestones.slice(0, 6).map(projectMilestoneRow).join('') +
         (milestones.length > 6 ? '<p class="field-help">+' + (milestones.length - 6) + ' more in the project</p>' : '')
       : '<p class="field-help">No milestones yet. Progress follows its tasks.</p>';
     const progressLabel = progress.milestones
-      ? progress.done + ' of ' + progress.total + (progress.total === 1 ? ' milestone' : ' milestones')
-      : (progress.total
-        ? progress.done + ' of ' + progress.total + (progress.total === 1 ? ' task' : ' tasks')
+      ? progress.doneMilestones + ' of ' + progress.totalMilestones +
+        (progress.totalMilestones === 1 ? ' milestone' : ' milestones')
+      : (progress.totalTasks
+        ? progress.doneTasks + ' of ' + progress.totalTasks + (progress.totalTasks === 1 ? ' task' : ' tasks')
         : 'No tasks yet');
+    const taskLabel = tasks.length
+      ? tasks.length + (tasks.length === 1 ? ' task' : ' tasks') +
+        ' · ' + progress.doneTasks + ' done'
+      : 'No tasks';
 
     return '<article class="project-card' + (project.status === 'done' ? ' is-done' : '') + '">' +
       '<div class="project-card-head">' +
@@ -9662,7 +9686,7 @@ function renderProjects() {
       (project.summary ? '<p class="project-summary">' + escapeHtml(project.summary) + '</p>' : '') +
       '<div class="project-meta">' +
         projectTargetLabel(project) +
-        '<span>' + tasks.length + (tasks.length === 1 ? ' task' : ' tasks') + '</span>' +
+        '<span>' + escapeHtml(taskLabel) + '</span>' +
         (project.circleId ? '<span class="task-circle-chip">' + escapeHtml(circleName(project.circleId)) + '</span>' : '') +
       '</div>' +
       '<div class="project-progress" role="img" aria-label="' + progress.percent + '% complete">' +
@@ -9750,6 +9774,8 @@ function renderProjectModal() {
             '<span class="project-task-title">' + escapeHtml(task.title) + '</span>' +
             (task.assigneeId ? '<span class="task-assignee-chip">' + personNameHtml(task.assigneeId) + '</span>' : '') +
             (task.dueAt ? '<span class="project-milestone-due">' + escapeHtml(formatDay(task.dueAt)) + '</span>' : '') +
+            '<button class="project-task-promote" type="button" data-task-promote="' + escapeHtml(task.id) + '" ' +
+              'title="Promote to milestone" aria-label="Promote to milestone">Milestone</button>' +
           '</div>';
         }).join('')
       : '<div class="social-empty">Tasks you assign to this project in To-dos show up here.</div>';
@@ -10861,6 +10887,21 @@ async function saveTaskProject(id, value) {
   }
 }
 
+async function promoteTaskToMilestone(id) {
+  const task = findSpaceTask(id);
+  if (!task || !task.projectId) return;
+
+  const data = await spaceRequest('/tasks/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    body: { isMilestone: true, version: task.version }
+  });
+  if (data && data.task) {
+    upsertSpaceRow('tasks', data.task);
+    refreshSpaceViews();
+    toast('Promoted to milestone');
+  }
+}
+
 async function deleteSpaceTask(id) {
   const task = findSpaceTask(id);
   if (!task) return;
@@ -11046,7 +11087,7 @@ function exitCircle(circleId) {
 
 function spaceScheduleItems() {
   const taskItems = state.space.tasks
-    .filter((task) => task.dueAt && !Number.isNaN(new Date(task.dueAt).getTime()))
+    .filter((task) => !task.isMilestone && task.dueAt && !Number.isNaN(new Date(task.dueAt).getTime()))
     .map((task) => ({
       key: 'task:' + task.id,
       source: 'task',
@@ -11059,6 +11100,21 @@ function spaceScheduleItems() {
       done: task.status === 'done',
       task
     }));
+  const milestoneItems = state.space.tasks
+    .filter((task) => task.isMilestone && task.dueAt && !Number.isNaN(new Date(task.dueAt).getTime()))
+    .map((task) => ({
+      key: 'milestone:' + task.id,
+      source: 'milestone',
+      sourceId: task.id,
+      title: task.title,
+      at: task.dueAt,
+      allDay: Boolean(task.dueAllDay),
+      kind: 'milestone',
+      circleId: task.circleId || null,
+      done: task.status === 'done',
+      projectId: task.projectId,
+      milestone: task
+    }));
   const projectItems = (state.space.projects || [])
     .filter((project) => project.targetOn)
     .map((project) => ({
@@ -11068,7 +11124,7 @@ function spaceScheduleItems() {
       title: project.name,
       at: dayOnly(project.targetOn) + 'T09:00',
       allDay: true,
-      kind: 'milestone',
+      kind: 'project',
       circleId: project.circleId || null,
       done: project.status === 'done',
       project
@@ -11086,7 +11142,7 @@ function spaceScheduleItems() {
       circleId: contact.circleId || null,
       contact
     }));
-  return taskItems.concat(projectItems, contactItems);
+  return taskItems.concat(milestoneItems, projectItems, contactItems);
 }
 
 function scheduleItems() {
@@ -11127,6 +11183,11 @@ function calendarSourceLabel(item) {
       : 'My contact';
     return where + (item.contact && item.contact.company ? ' · ' + item.contact.company : '');
   }
+  if (item.source === 'milestone') {
+    const where = item.circleId ? circleName(item.circleId) : 'My project';
+    const project = item.projectId ? findProject(item.projectId) : null;
+    return where + ' · ' + (project ? project.name + ' · ' : '') + 'Milestone';
+  }
   if (item.source === 'project') {
     const where = item.circleId ? circleName(item.circleId) : 'My project';
     return where + ' · Project target';
@@ -11162,6 +11223,7 @@ function scheduleRowHtml(item, options = {}) {
   const past = new Date(item.at).getTime() < Date.now() ? ' is-past' : '';
   const subHtml = escapeHtml(scheduleWhen(item, options)) + ' · ' + calendarSourceHtml(item);
   const kindClass = item.source === 'task' ? ' task'
+    : item.source === 'milestone' ? ' milestone'
     : item.source === 'crm' ? ' crm'
     : item.source === 'project' ? ' project'
     : (item.kind === 'reminder' ? ' reminder' : '');
@@ -11171,6 +11233,12 @@ function scheduleRowHtml(item, options = {}) {
         '<strong>' + escapeHtml(item.title) + '</strong>' +
         '<span>' + subHtml + '</span>' +
       '</button>'
+    : item.source === 'milestone'
+      ? '<button class="event-row-main event-row-button" type="button" data-cal-project-open="' +
+          escapeHtml(item.projectId || '') + '">' +
+          '<strong>' + escapeHtml(item.title) + '</strong>' +
+          '<span>' + subHtml + '</span>' +
+        '</button>'
     : item.source === 'crm'
       ? '<button class="event-row-main event-row-button" type="button" data-cal-contact-open="' +
           escapeHtml(item.sourceId) + '">' +
@@ -11193,6 +11261,11 @@ function scheduleRowHtml(item, options = {}) {
         escapeHtml(item.sourceId) + '" title="' + (item.done ? 'Reopen task' : 'Mark task done') +
         '" aria-label="' + (item.done ? 'Reopen task' : 'Mark task done') + '">' +
         (item.done ? '↺' : '✓') + '</button>'
+    : item.source === 'milestone'
+      ? '<button class="event-del task-check-mini" type="button" data-cal-task-done="' +
+          escapeHtml(item.sourceId) + '" title="' + (item.done ? 'Reopen milestone' : 'Mark milestone reached') +
+          '" aria-label="' + (item.done ? 'Reopen milestone' : 'Mark milestone reached') + '">' +
+          (item.done ? '↺' : '✓') + '</button>'
     : item.source === 'crm'
       ? '<button class="event-del" type="button" data-cal-contact-open="' + escapeHtml(item.sourceId) +
           '" title="Open contact" aria-label="Open contact">↗</button>'
@@ -11438,6 +11511,13 @@ function bindEvents() {
     if (taskDelete) {
       event.preventDefault();
       deleteSpaceTask(taskDelete.dataset.taskDelete);
+      return;
+    }
+
+    const taskPromote = event.target.closest('[data-task-promote]');
+    if (taskPromote) {
+      event.preventDefault();
+      promoteTaskToMilestone(taskPromote.dataset.taskPromote);
       return;
     }
 
